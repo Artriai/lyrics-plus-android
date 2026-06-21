@@ -106,8 +106,9 @@ body {
   transform-origin: left center;
   transition:
     transform 500ms cubic-bezier(0.22, 0.68, 0.35, 1),
-    opacity 450ms cubic-bezier(0.22, 0.68, 0.35, 1);
-  will-change: transform, opacity;
+    opacity 450ms cubic-bezier(0.22, 0.68, 0.35, 1),
+    filter 400ms cubic-bezier(0.22, 0.68, 0.35, 1);
+  will-change: transform, opacity, filter;
   contain: content;
 }
 
@@ -160,6 +161,7 @@ body {
   color: var(--active);
   text-shadow: 0 10px 32px rgba(0, 0, 0, 0.16);
 }
+
 
 .line.active .translation {
   color: var(--translation);
@@ -411,8 +413,8 @@ body {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  /* Vertical centering within the safe area (status bar / cutout) */
+  justify-content: flex-start;
+  /* translateY in JS handles vertical positioning to keep active line centered */
   padding-top: var(--status-bar-height, 28px);
   padding-bottom: var(--status-bar-height, 28px);
 }
@@ -424,38 +426,42 @@ body {
   align-items: flex-end;
 }
 
-/* Right-align text and scale transitions from right center in right-aligned mode */
-/* margin-right includes --safe-right for camera cutout in reverse landscape */
+/* Center-align text in right-aligned mode */
 .stage.right-aligned .line {
   width: calc(100% - 24px - 24px - var(--safe-right, 0px));
   margin-left: auto;
   margin-right: calc(24px + var(--safe-right, 0px));
-  text-align: right;
-  transform-origin: right center;
+  text-align: center;
+  transform-origin: center center;
 }
 
-/* In landscape focused mode, show ONLY the active line to fit tight screen heights */
-.stage.right-aligned:not(.full-lyrics-mode) .line:not(.active) {
-  display: none !important;
-}
-
-/* Dynamic responsive text sizing for right-aligned focused mode — sizes set by JS */
-.stage.right-aligned:not(.full-lyrics-mode) .line {
-  margin-bottom: 0 !important;
-}
+/* Focused-mode font sizes for right-aligned (landscape split) layout */
+/* Smaller than default/@media to fit multiple lines in a narrower right pane */
 .stage.right-aligned:not(.full-lyrics-mode) .text {
-  font-size: var(--focused-text-size, 36px) !important;
-  line-height: 1.2 !important;
+  font-size: calc(36px * var(--in-app-font-scale, 1));
+  line-height: 1.2;
 }
 .stage.right-aligned:not(.full-lyrics-mode) .translation {
-  font-size: var(--focused-trans-size, 22px) !important;
-  margin-top: 4px !important;
-  line-height: 1.2 !important;
+  font-size: calc(22px * var(--in-app-font-scale, 1));
+  margin-top: 5px;
+  line-height: 1.2;
 }
 .stage.right-aligned:not(.full-lyrics-mode) .romaji {
-  font-size: var(--focused-romaji-size, 15px) !important;
-  margin-bottom: 2px !important;
-  line-height: 1.1 !important;
+  font-size: calc(15px * var(--in-app-font-scale, 1));
+  margin-bottom: 2px;
+  line-height: 1.1;
+}
+
+/* Tighten line spacing in landscape split to show more lines */
+.stage.right-aligned:not(.full-lyrics-mode) .line {
+  margin-bottom: 18px;
+}
+
+/* Browse mode: user is manually scrolling — remove blur/transparency on all lines */
+.stage.browsing .line {
+  opacity: 1 !important;
+  filter: none !important;
+  transform: scale(1) !important;
 }
 
 /* --- Upgraded Ruby Furigana Layouts --- */
@@ -480,17 +486,18 @@ rt {
   display: inline-block;
   white-space: pre;
   color: rgba(255, 255, 255, 0.35); /* Dim inactive color */
-  transition: color 250ms ease;
+  transition: color 400ms cubic-bezier(0.22, 0.68, 0.35, 1);
   text-shadow: none !important; /* Completely eliminate glaring shadow pop-in and glowing halos */
 }
 
 .syllable.past {
-  color: #ffffff; /* Fully highlighted active color */
-  transition: none !important; /* Eliminate flash when transitioning from active */
+  color: rgba(255, 255, 255, 0.35); /* Same as unplayed syllable dim color */
+  transition: color 250ms ease; /* Smoothly fade white→dim after syllable completes */
 }
 
 .syllable.active {
   /* Real-time linear sweeping gradient */
+  color: #ffffff;
   background: linear-gradient(
     to right,
     #ffffff var(--progress, 0%),
@@ -499,7 +506,8 @@ rt {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   display: inline-block;
-  transition: none !important; /* Avoid transitioning while sweeping */
+  transition: color 400ms cubic-bezier(0.22, 0.68, 0.35, 1);
+  /* background/text-fill changes instantly, color transitions smoothly on class removal */
 }
 
 /* Smoothly sweep both the Kanji base text and Furigana annotations in perfect lock-step, avoiding WebKit clipping bugs */
@@ -519,3 +527,4 @@ rt {
   -webkit-background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
 }
+

@@ -47,7 +47,8 @@ data class LyricsUiState(
     val inAppFontScale: Float = 1.0f,
     val anonymousStatsEnabled: Boolean = true,
     val anonymousStatsAvailable: Boolean = false,
-    val autoCheckUpdatesEnabled: Boolean = true
+    val autoCheckUpdatesEnabled: Boolean = true,
+    val deviceUiMode: Int = 0
 )
 
 class MainViewModel(
@@ -64,7 +65,8 @@ class MainViewModel(
         inAppFontScale = prefs.getFloat("in_app_font_scale", 1.0f),
         anonymousStatsEnabled = AnonymousStats.isEnabled(application),
         anonymousStatsAvailable = AnonymousStats.isAvailable(),
-        autoCheckUpdatesEnabled = prefs.getBoolean(PREF_AUTO_CHECK_UPDATES, true)
+        autoCheckUpdatesEnabled = prefs.getBoolean(PREF_AUTO_CHECK_UPDATES, true),
+        deviceUiMode = prefs.getInt("device_ui_mode", 0)
     ))
     val uiState: StateFlow<LyricsUiState> = _uiState.asStateFlow()
 
@@ -530,6 +532,15 @@ class MainViewModel(
             prefs.edit().putInt("reading_mode", nextMode).apply()
             AnonymousStats.trackReadingModeChanged(getApplication(), nextMode)
             state.copy(readingMode = nextMode)
+        }
+    }
+
+    fun toggleDeviceUiMode() {
+        _uiState.update { state ->
+            val nextMode = if (state.deviceUiMode == 0) 1 else 0
+            prefs.edit().putInt("device_ui_mode", nextMode).apply()
+            AnonymousStats.trackFeatureToggle(getApplication(), "device_ui_mode", nextMode == 1)
+            state.copy(deviceUiMode = nextMode)
         }
     }
 

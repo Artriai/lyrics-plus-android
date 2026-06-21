@@ -13,6 +13,49 @@
 
 ---
 
+## 📋 更新日志
+
+### 横屏布局重构 & 视觉增强
+
+- **横屏右区歌词 33% 锚点滚动**：active 行固定在右区 33% 位置，上方保留 2 行已唱歌词（带模糊效果），超出隐藏
+- **逐级模糊效果**：已过行 1→2 逐级模糊/降低透明度/缩放，未来行 1→8+ 逐级加深效果
+- **逐字遮罩跟唱**：实时追踪每个音节的播放进度（progress 0→100%），唱完的音节保持白色不暗淡
+- **减弱模糊强度**，放大左侧专辑图片至 300dp
+- **横屏左侧专辑封面和播放按钮放大**：封面 150dp → 200dp，按钮外框 44dp → 56dp
+
+### 聚焦模式交互升级
+
+- **歌词区域手动滑动浏览**：touchstart/touchmove/touchend 实现手势滑动浏览，带惯性动画（easeOutQuint）和卡死自动恢复
+- **滑动限位 + 更丝滑的 fling 动画**：硬边界夹紧 + 橡胶带回弹，惯性动画时长随速度自适应
+
+### UI 模式切换（手机 / Pad）
+
+- 新增 `deviceUiMode` 状态（0 = 手机 UI，1 = Pad UI），持久化到 SharedPreferences
+- 设置菜单添加 UI 模式切换开关
+- **手机模式竖屏**：注入 CSS 将 lyrics top 设为 7vh，选中歌词位于上部 2/5；header 压缩字体和内边距，减少歌词区域被下推
+- **手机模式横屏**：缩小专辑封面（160dp）、左列权重（0.38）、字体和间距
+- **Pad 模式**：保持原有布局，切换时自动恢复
+- 手机模式竖屏 header 大小与 Pad 保持一致
+- 修复横竖屏切换后手机模式歌词位置未正确更新（LaunchedEffect 添加 `isMultiPane` 依赖，resize 事件重置 `lyricsViewportEl`）
+
+### 性能优化
+
+- **暂停时大幅降低刷新率**：
+  - WebView renderer：rAF 改为 start/stop 模式，暂停时停止 rAF 和 VRR keepalive hack
+  - FloatingLyricsService：滴答循环从固定 8ms 改为播放 120Hz / 暂停 1Hz
+  - SuperIslandLyricsService：滴答循环从固定 250ms 改为播放 250ms / 暂停 2000ms
+  - AlbumArtPalette：添加 LruCache 缓存调色板提取，避免重复解析
+
+### 问题修复
+
+- 修复聚焦模式横向歌词布局时，未来行 blur 不刷新的 bug（扩大 patchFocusedMode 循环范围到 ±8）
+- 修复换行时旧行颜色不恢复的问题（recacheActiveSyllables 准确查找旧 active 音节）
+- 修复未来行 blur/opacity/scale 不更新的 bug
+- 横屏 EmptyOverlay 分左右布局（左 45% 欢迎态，右 55% 搜索状态）
+- 修复 resize 事件中 lyricsViewportEl 未重置导致容器尺寸计算错误
+
+---
+
 ## ⚙️ 手机端配置指南
 
 为了让 App 能够完美接收 Spotify 的播放状态与歌词进度，请在手机上进行以下设置：

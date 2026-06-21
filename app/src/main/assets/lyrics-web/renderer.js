@@ -34,6 +34,15 @@
   var cachedActiveSyllables = [];
 
   function recacheActiveSyllables() {
+    // Reset any .syllable.active not on the current active line (old line that just scrolled up)
+    var allActiveSyllables = lyricsEl.querySelectorAll(".syllable.active");
+    var currentActiveLine = lyricsEl.querySelector(".line.active");
+    for (var i = 0; i < allActiveSyllables.length; i++) {
+      var el = allActiveSyllables[i];
+      if (!currentActiveLine || !currentActiveLine.contains(el)) {
+        el.className = "syllable";
+      }
+    }
     cachedActiveSyllables = [];
     var activeLineEl = lyricsEl.querySelector(".line.active");
     if (!activeLineEl) return;
@@ -49,6 +58,63 @@
         lastProgress: -1
       });
     }
+  }
+
+  // --- User scroll/browse state (landscape lyrics pane) ---
+  var userScrolling = false;
+  var scrollOffset = 0;
+  var touchStartY = 0;
+  var scrollIdleTimer = null;
+  var wasScrollGesture = false; // suppress click after scroll
+  var scrollVelocity = 0;
+  var lastMoveTime = 0;
+  var lastTouchTime = 0; // timestamp of last user touch, for stuck-detection
+  var flingRafId = null;
+  var SCROLL_RESUME_DELAY = 1000; // 1s idle → resume auto-follow
+  var RECOVERY_TIMEOUT = 2000; // force recovery if userScrolling stuck for 2s
+  var scrollBoundaries = null; // { minScroll: number, maxScroll: number }
+
+  function forceRecover() {
+    if (!userScrolling) return;
+    scrollBoundaries = null;
+    userScrolling = false;
+    wasScrollGesture = false;
+    if (flingRafId !== null) { cancelAnimationFrame(flingRafId); flingRafId = null; }
+    if (scrollIdleTimer !== null) { clearTimeout(scrollIdleTimer); scrollIdleTimer = null; }
+    stageEl.classList.remove("browsing");
+    lyricsEl.style.transition = "";
+    // Snap to current playback position
+    var lines = lyricsEl.querySelectorAll(".line");
+    if (lines[state.activeIndex]) {
+      var activeLine = lines[state.activeIndex];
+      var containerHeight = getScrollContainer().clientHeight;
+      var cs = getComputedStyle(lyricsEl);
+      var padTop = parseFloat(cs.paddingTop) || 0;
+      var anchor = containerHeight * 0.33;
+      lyricsEl.style.transform = "translateY(" + (anchor - padTop - activeLine.offsetTop) + "px)";
+    }
+    updatePlaybackPosition();
+  }
+
+  function getScrollBoundaries() {
+    var lines = lyricsEl.querySelectorAll(".line");
+    if (!lines.length) return { minScroll: 0, maxScroll: 0 };
+    var containerHeight = getScrollContainer().clientHeight;
+    var cs = getComputedStyle(lyricsEl);
+    var padTop = parseFloat(cs.paddingTop) || 0;
+    var anchor = containerHeight * 0.33;
+    var firstLine = lines[0];
+    var lastLine = lines[lines.length - 1];
+    var minScroll = firstLine.offsetTop + padTop - anchor;
+    var maxScroll = lastLine.offsetTop + lastLine.clientHeight + padTop - anchor;
+    return { minScroll: Math.round(Math.min(minScroll, 0)), maxScroll: Math.round(Math.max(maxScroll, 0)) };
+  }
+
+  function clampWithRubberBand(offset, min, max) {
+    var STRENGTH = 0.35;
+    if (offset < min) return min - (min - offset) * STRENGTH;
+    if (offset > max) return max + (offset - max) * STRENGTH;
+    return offset;
   }
 
   function report(message) {
@@ -105,6 +171,7 @@
 
   function setLyrics(lines) {
     try {
+      scrollBoundaries = null;
       state.lyrics = Object.prototype.toString.call(lines) === "[object Array]" ? lines : [];
       if (state.lyrics.length > 0) {
         var firstLineStart = Number(state.lyrics[0].startTimeMs || 0);
@@ -189,8 +256,10 @@
 
       if (playback.isPlaying) {
         stageEl.classList.remove("paused");
+        startTick();
       } else {
         stageEl.classList.add("paused");
+        stopTick();
       }
       updatePlaybackPosition();
     } catch (error) {
@@ -287,7 +356,8 @@
       var progress = 0;
       
       if (currentPosition >= end) {
-        targetClass = "syllable past";
+        // Keep as active with 100% progress so it stays white until whole line finishes
+        targetClass = "syllable active";
         progress = 100;
       } else if (currentPosition >= start && currentPosition < end) {
         targetClass = "syllable active";
@@ -313,23 +383,39 @@
   }
 
   var vrrToggle = false;
-  function tick() {
-    if (playback.isPlaying) {
-      updatePlaybackPosition();
-      // Force 120Hz compositor scheduling on VRR Android screens.
-      // Two signals are needed to convince the WebView compositor every frame has work:
-      //   1. transform (compositor-only, no layout/paint) — matched by will-change:transform
-      //   2. opacity micro-alternation (pixel-level change) — forces actual pixel diff
-      // Together they prevent the WebView from throttling RAF to 60Hz.
-      if (vrrKeepaliveEl) {
-        vrrToggle = !vrrToggle;
-        vrrKeepaliveEl.style.transform = vrrToggle ? "translateX(0.5px)" : "translateX(0px)";
-        vrrKeepaliveEl.style.opacity = vrrToggle ? "0.015" : "0.01";
+  var rafId = null;
+  function startTick() {
+    if (rafId !== null) return;
+    function tick() {
+      if (playback.isPlaying) {
+        updatePlaybackPosition();
+        // Stuck-detection: if userScrolling is true but no touch for 5s, force recovery
+        if (userScrolling && lastTouchTime > 0 && performance.now() - lastTouchTime > RECOVERY_TIMEOUT) {
+          forceRecover();
+        }
+        // Force 120Hz compositor scheduling on VRR Android screens.
+        // Two signals are needed to convince the WebView compositor every frame has work:
+        //   1. transform (compositor-only, no layout/paint) — matched by will-change:transform
+        //   2. opacity micro-alternation (pixel-level change) — forces actual pixel diff
+        // Together they prevent the WebView from throttling RAF to 60Hz.
+        if (vrrKeepaliveEl) {
+          vrrToggle = !vrrToggle;
+          vrrKeepaliveEl.style.transform = vrrToggle ? "translateX(0.5px)" : "translateX(0px)";
+          vrrKeepaliveEl.style.opacity = vrrToggle ? "0.015" : "0.01";
+        }
       }
+      rafId = requestAnimationFrame(tick);
     }
-    requestAnimationFrame(tick);
+    rafId = requestAnimationFrame(tick);
   }
-  requestAnimationFrame(tick);
+  function stopTick() {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  }
+  // Start the tick loop if already playing (e.g. WebView loaded mid-track)
+  if (playback.isPlaying) { startTick(); }
 
   function findActiveIndex(positionMs) {
     var lyrics = state.lyrics;
@@ -365,13 +451,17 @@
   // ---------- Focused-mode helpers ----------
 
   function getDistanceStyle(distance) {
-    // Past lines: fully hidden (no blur bar needed)
-    if (distance < 0) {
-      return "opacity:0;transform:scale(0.78)";
-    }
-    var scale = distance === 0 ? 1 : Math.abs(distance) === 1 ? 0.88 : 0.78;
-    var opacity = distance === 0 ? 1 : Math.abs(distance) === 1 ? 0.55 : 0.25;
-    return "opacity:" + opacity + ";transform:scale(" + scale + ")";
+    // Only keep up to 2 past lines visible above active
+    if (distance < -2) return "opacity:0;transform:scale(0.78)";
+    var absDist = Math.abs(distance);
+    if (absDist === 0) return "opacity:1;transform:scale(1)";
+    // Progressive blur: 2px at dist 1 → 16px at dist 8+
+    // opacity: 0.55 at dist 1 → 0.08 at dist 8+
+    // scale: 0.92 at dist 1 → 0.75 at dist 8+
+    var blurPx = Math.min(absDist * 0.5, 4);
+    var opacity = Math.max(0.55 - (absDist - 1) * 0.065, 0.08);
+    var scale = Math.max(0.92 - (absDist - 1) * 0.025, 0.75);
+    return "opacity:" + opacity + ";transform:scale(" + scale + ");filter:blur(" + blurPx + "px)";
   }
 
   function getKindClass(distance) {
@@ -655,8 +745,8 @@
       loopEnd = totalLines - 1;
     } else {
       // Only lines near prevActive and active need updates
-      loopStart = Math.max(0, Math.min(prevActive, active) - 2);
-      loopEnd = Math.min(totalLines - 1, Math.max(prevActive, active) + 2);
+      loopStart = Math.max(0, Math.min(prevActive, active) - 8);
+      loopEnd = Math.min(totalLines - 1, Math.max(prevActive, active) + 8);
     }
 
     var hasReadingMode = state.readingMode > 0;
@@ -666,8 +756,8 @@
 
       if (!isSeek) {
         var prevDistance = i - prevActive;
-        // Skip elements that didn't change state
-        if ((prevDistance > 1 && distance > 1) || (prevDistance < 0 && distance < 0)) {
+        // Skip elements that didn't change state (only past lines beyond -2 are stable)
+        if (distance < -2 && prevDistance < -2) {
           continue;
         }
       }
@@ -789,15 +879,19 @@
       }
     }
 
-    // Smoothly move the container so the active line stays at the anchor position
-    // In right-aligned mode, CSS flex centering handles positioning
+    // Smoothly move the container so the active line stays at the top-quarter of the viewport
+    // with 2 past lines visible above it
     requestAnimationFrame(function () {
-      if (!_isRightAligned && lines[active]) {
+      if (userScrolling) return; // Don't fight user's manual scroll
+      if (lines[active]) {
         var activeLine = lines[active];
-        var offset = activeLine.offsetTop;
-        lyricsEl.style.transform = "translateY(-" + offset + "px)";
+        var containerHeight = getScrollContainer().clientHeight;
+        var cs = getComputedStyle(lyricsEl);
+        var padTop = parseFloat(cs.paddingTop) || 0;
+        var anchor = containerHeight * 0.33;
+        var translateY = anchor - padTop - activeLine.offsetTop;
+        lyricsEl.style.transform = "translateY(" + translateY + "px)";
       }
-      fitFocusedFontSize();
     });
   }
 
@@ -849,11 +943,13 @@
         if (state.isFullLyricsMode) {
           lyricsEl.style.transform = "none";
           scrollToActiveIfNeeded(activeLine);
-        } else if (_isRightAligned) {
-          // CSS flex centering handles positioning in right-aligned focused mode
-          lyricsEl.style.transform = "none";
         } else {
-          lyricsEl.style.transform = "translateY(-" + offset + "px)";
+          var containerHeight = getScrollContainer().clientHeight;
+          var cs = getComputedStyle(lyricsEl);
+          var padTop = parseFloat(cs.paddingTop) || 0;
+          var anchor = containerHeight * 0.33;
+          var translateY = anchor - padTop - offset;
+          lyricsEl.style.transform = "translateY(" + translateY + "px)";
         }
       }
       fitFocusedFontSize();
@@ -900,45 +996,8 @@
   // Binary-searches for the largest text font-size that makes
   // romaji + text + translation fit within the available content area.
   function fitFocusedFontSize() {
-    if (!_isRightAligned || state.isFullLyricsMode) return;
-    var activeLine = lyricsEl.querySelector(".line.active");
-    if (!activeLine) return;
-
-    // clientHeight includes padding; subtract it to get the actual safe content area
-    var cs = getComputedStyle(lyricsEl);
-    var padTop = parseFloat(cs.paddingTop) || 0;
-    var padBottom = parseFloat(cs.paddingBottom) || 0;
-    var available = lyricsEl.clientHeight - padTop - padBottom;
-    if (available <= 0) available = window.innerHeight * 0.8;
-    var target = available * 0.95;
-
-    var lo = 12, hi = 60;
-    var bestBase = lo;
-
-    // Quick binary search (6 iterations → precision < 1px)
-    for (var iter = 0; iter < 6; iter++) {
-      var mid = (lo + hi) / 2;
-      applyFocusedSizes(mid);
-      var h = activeLine.scrollHeight;
-      if (h <= target) {
-        bestBase = mid;
-        lo = mid;
-      } else {
-        hi = mid;
-      }
-    }
-
-    applyFocusedSizes(bestBase);
-    report("fitFocusedFontSize: base=" + Math.round(bestBase) + "px, available=" + Math.round(available) + ", pad=" + Math.round(padTop));
-  }
-
-  function applyFocusedSizes(base) {
-    var textPx = Math.round(base) + "px";
-    var transPx = Math.round(base * 0.62) + "px";
-    var romajiPx = Math.round(base * 0.42) + "px";
-    stageEl.style.setProperty("--focused-text-size", textPx);
-    stageEl.style.setProperty("--focused-trans-size", transPx);
-    stageEl.style.setProperty("--focused-romaji-size", romajiPx);
+    // Font sizes are now handled by CSS for all layouts
+    return;
   }
 
   function setInAppFontScale(scale) {
@@ -1021,12 +1080,162 @@
     report("error:" + message + "@" + line);
   };
 
-  // Click handler to toggle mode
+  // Click handler to toggle mode (skip if just finished a scroll gesture)
   stageEl.addEventListener("click", function (e) {
+    if (wasScrollGesture) {
+      wasScrollGesture = false;
+      return;
+    }
     if (state.lyrics.length > 0) {
       toggleFullLyricsMode();
     }
   });
+
+  // --- Touch-to-browse support (focused mode, landscape lyrics pane) ---
+  // Use stageEl (not lyricsEl) because .lyrics-viewport has pointer-events:none
+  stageEl.addEventListener("touchstart", function (e) {
+    if (state.isFullLyricsMode || state.lyrics.length === 0) return;
+    lastTouchTime = performance.now();
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+
+  stageEl.addEventListener("touchmove", function (e) {
+    if (state.isFullLyricsMode || state.lyrics.length === 0) return;
+    var now = performance.now();
+    var dy = touchStartY - e.touches[0].clientY;
+    if (!userScrolling) {
+      // First significant movement → enter browse mode
+      if (Math.abs(dy) < 10) return;
+      userScrolling = true;
+      wasScrollGesture = true;
+      if (flingRafId !== null) cancelAnimationFrame(flingRafId);
+      flingRafId = null;
+      scrollVelocity = 0;
+      lyricsEl.style.transition = "none";
+      stageEl.classList.add("browsing");
+      var match = lyricsEl.style.transform.match(/translateY\(([-\d.]+)px\)/);
+      scrollOffset = match ? -parseFloat(match[1]) : 0;
+      scrollBoundaries = getScrollBoundaries();
+    }
+    // Exponential moving average for velocity (px/ms)
+    var dt = now - lastMoveTime;
+    if (dt > 0 && dt < 100) {
+      var instantV = dy / dt;
+      scrollVelocity = scrollVelocity * 0.6 + instantV * 0.4;
+    }
+    lastMoveTime = now;
+    scrollOffset += dy;
+    scrollOffset = clampWithRubberBand(scrollOffset, scrollBoundaries.minScroll, scrollBoundaries.maxScroll);
+    touchStartY = e.touches[0].clientY;
+    lyricsEl.style.transform = "translateY(-" + scrollOffset + "px)";
+  }, { passive: true });
+
+  function startFling() {
+    var VELOCITY_SCALE = 300;  // velocity (px/ms) → px
+    var MIN_DURATION = 200;
+    var MAX_DURATION = 800;
+
+    var absV = Math.abs(scrollVelocity);
+    var targetDelta = absV * VELOCITY_SCALE;
+    var targetOffset = scrollOffset + Math.round(targetDelta) * (scrollVelocity > 0 ? 1 : -1);
+    var duration = Math.round(MIN_DURATION + (absV / 10) * (MAX_DURATION - MIN_DURATION));
+    duration = Math.max(MIN_DURATION, Math.min(MAX_DURATION, duration));
+
+    // Clamp fling target to hard boundaries and adjust duration proportionally
+    if (scrollBoundaries) {
+      var clamped = Math.max(scrollBoundaries.minScroll, Math.min(scrollBoundaries.maxScroll, targetOffset));
+      if (clamped !== targetOffset) {
+        var originalDelta = Math.abs(targetOffset - scrollOffset);
+        var clampedDelta = Math.abs(clamped - scrollOffset);
+        var ratio = originalDelta > 0 ? clampedDelta / originalDelta : 1;
+        targetOffset = clamped;
+        duration = Math.round(Math.min(MAX_DURATION, MIN_DURATION + ratio * (duration - MIN_DURATION)));
+      }
+    }
+
+    var startOffset = scrollOffset;
+    var startTime = performance.now();
+
+    function easeOutQuint(t) {
+      return 1 - Math.pow(1 - t, 5);
+    }
+
+    function step() {
+      var elapsed = performance.now() - startTime;
+      var t = Math.min(elapsed / duration, 1);
+      var eased = easeOutQuint(t);
+      scrollOffset = startOffset + (targetOffset - startOffset) * eased;
+      // Snap back if beyond boundaries during animation (shouldn't happen with clamped target, but safe)
+      if (scrollBoundaries) {
+        scrollOffset = clampWithRubberBand(scrollOffset, scrollBoundaries.minScroll, scrollBoundaries.maxScroll);
+      }
+      lyricsEl.style.transform = "translateY(-" + scrollOffset + "px)";
+      if (t < 1) {
+        flingRafId = requestAnimationFrame(step);
+      } else {
+        flingRafId = null;
+        // Snap back to boundary if released beyond limits
+        if (scrollBoundaries && (scrollOffset < scrollBoundaries.minScroll || scrollOffset > scrollBoundaries.maxScroll)) {
+          scrollOffset = Math.max(scrollBoundaries.minScroll, Math.min(scrollBoundaries.maxScroll, scrollOffset));
+          lyricsEl.style.transition = "";
+          lyricsEl.style.transform = "translateY(-" + scrollOffset + "px)";
+        }
+        // Fling done → start idle timer for auto-resume
+        scrollIdleTimer = setTimeout(function () {
+          userScrolling = false;
+          wasScrollGesture = false;
+          stageEl.classList.remove("browsing");
+          lyricsEl.style.transition = "";
+          var lines = lyricsEl.querySelectorAll(".line");
+          if (lines[state.activeIndex]) {
+            var activeLine = lines[state.activeIndex];
+            var containerHeight = getScrollContainer().clientHeight;
+            var cs = getComputedStyle(lyricsEl);
+            var padTop = parseFloat(cs.paddingTop) || 0;
+            var anchor = containerHeight * 0.33;
+            lyricsEl.style.transform = "translateY(" + (anchor - padTop - activeLine.offsetTop) + "px)";
+          }
+          updatePlaybackPosition();
+        }, SCROLL_RESUME_DELAY);
+      }
+    }
+    flingRafId = requestAnimationFrame(step);
+  }
+
+  stageEl.addEventListener("touchend", function () {
+    if (!userScrolling) return;
+    // Stop idle timer from any previous gesture
+    if (scrollIdleTimer !== null) clearTimeout(scrollIdleTimer);
+    if (flingRafId !== null) cancelAnimationFrame(flingRafId);
+
+    if (Math.abs(scrollVelocity) > 0.3) {
+      startFling();
+    } else {
+      // Snap back to boundary if released beyond limits
+      if (scrollBoundaries && (scrollOffset < scrollBoundaries.minScroll || scrollOffset > scrollBoundaries.maxScroll)) {
+        scrollOffset = Math.max(scrollBoundaries.minScroll, Math.min(scrollBoundaries.maxScroll, scrollOffset));
+        lyricsEl.style.transition = "";
+        lyricsEl.style.transform = "translateY(-" + scrollOffset + "px)";
+      }
+      // No significant velocity → start idle timer immediately
+      scrollIdleTimer = setTimeout(function () {
+        userScrolling = false;
+        wasScrollGesture = false;
+        stageEl.classList.remove("browsing");
+        lyricsEl.style.transition = "";
+        var lines = lyricsEl.querySelectorAll(".line");
+        if (lines[state.activeIndex]) {
+          var activeLine = lines[state.activeIndex];
+          var containerHeight = getScrollContainer().clientHeight;
+          var cs = getComputedStyle(lyricsEl);
+          var padTop = parseFloat(cs.paddingTop) || 0;
+          var anchor = containerHeight * 0.33;
+          lyricsEl.style.transform = "translateY(" + (anchor - padTop - activeLine.offsetTop) + "px)";
+        }
+        updatePlaybackPosition();
+      }, SCROLL_RESUME_DELAY);
+    }
+  }, { passive: true });
 
   // Re-calculate layout and scroll offsets on window resize (rotation / unfolding)
   window.addEventListener("resize", function () {
@@ -1035,6 +1244,7 @@
         if (!state.isFullLyricsMode) {
           // In focused mode, do a full re-render so line visibility/sizing is correct
           prevActiveIndex = -1;
+          lyricsViewportEl = null;
           lyricsEl.style.transition = "none";
           renderFull();
           requestAnimationFrame(function () {

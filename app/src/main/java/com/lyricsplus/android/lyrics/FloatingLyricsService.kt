@@ -386,7 +386,7 @@ class FloatingLyricsService : Service() {
                 if (pb != null && pb.isPlaying) {
                     val elapsed = SystemClock.elapsedRealtime() - pb.capturedElapsedMs
                     val rawPosition = pb.positionMs + elapsed
-                    
+
                     // Decaying visual offset over 1000ms
                     val timeSinceResume = SystemClock.elapsedRealtime() - resumeTimeMs
                     if (timeSinceResume < 1000L && visualOffsetMs != 0L) {
@@ -399,12 +399,13 @@ class FloatingLyricsService : Service() {
                         visualOffsetMs = 0L
                         estimatedPositionMs = rawPosition
                     }
-                } else if (pb != null) {
-                    estimatedPositionMs = pb.positionMs
+                    // 8ms (~120Hz) for butter-smooth 120FPS sweeps on VRR screens
+                    delay(8)
+                } else {
+                    // When paused, position doesn't change — throttle to 1Hz
+                    if (pb != null) estimatedPositionMs = pb.positionMs
+                    delay(1000)
                 }
-                // Use 8ms delay (roughly 120Hz) to push updates to Compose fast enough
-                // for butter-smooth 120FPS sweeps on variable refresh rate screens.
-                delay(8)
             }
         }
     }

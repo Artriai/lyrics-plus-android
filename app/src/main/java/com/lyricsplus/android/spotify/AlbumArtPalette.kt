@@ -2,6 +2,7 @@ package com.lyricsplus.android.spotify
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.collection.LruCache
 import androidx.palette.graphics.Palette
 
 data class AlbumArtPalette(
@@ -11,12 +12,19 @@ data class AlbumArtPalette(
 )
 
 object AlbumArtPaletteExtractor {
+    // Cache palette results by bitmap identity to avoid re-extracting
+    // when the same album art is used (e.g. switching lyrics sources).
+    private val paletteCache = LruCache<Int, List<AlbumArtPalette>>(16)
+
     fun fromBitmap(bitmap: Bitmap?): AlbumArtPalette? {
         return extractTemplates(bitmap).firstOrNull()
     }
 
     fun extractTemplates(bitmap: Bitmap?): List<AlbumArtPalette> {
         if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) return emptyList()
+
+        val key = System.identityHashCode(bitmap)
+        paletteCache.get(key)?.let { return it }
 
         val palette = try {
             Palette.from(bitmap).generate()
@@ -72,13 +80,15 @@ object AlbumArtPaletteExtractor {
         val monoAccent = dominantRgb.toAdjustedHex(saturation = 1.20f, value = 0.78f, hueShift = 30f)
         val monoTemplate = AlbumArtPalette(monoStart, monoEnd, monoAccent)
 
-        return listOf(
+        val result = listOf(
             vibrantTemplate,
             deepTemplate,
             softTemplate,
             neonTemplate,
             monoTemplate
         )
+        paletteCache.put(key, result)
+        return result
     }
 
     private fun Int.toAdjustedHex(saturation: Float, value: Float, hueShift: Float = 0f): String {

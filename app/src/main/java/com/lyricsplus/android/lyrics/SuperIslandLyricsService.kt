@@ -214,8 +214,13 @@ class SuperIslandLyricsService : Service() {
         tickJob = scope.launch {
             while (isActive) {
                 maybeSyncCurrentMediaSnapshot()
-                renderCurrentState()
-                delay(250)
+                val pb = currentPlayback
+                if (pb?.isPlaying == true) {
+                    renderCurrentState()
+                    delay(250)
+                } else {
+                    delay(2000)
+                }
             }
         }
     }

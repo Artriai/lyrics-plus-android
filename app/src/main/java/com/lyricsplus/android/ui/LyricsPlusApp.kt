@@ -148,8 +148,18 @@ private fun LyricsOverlay(
     // Throttle playback pushes to WebView: the JS renderer extrapolates position
     // via performance.now(), so we only need periodic sync updates (~150ms minimum interval)
     // to avoid overwhelming the JS bridge and competing with the rendering tick loop.
+    // When paused, send one final push to sync the frozen position, then stop entirely
+    // until playback resumes (WebView rAF is also stopped when paused).
     var lastPlaybackPushMs by remember { mutableStateOf(0L) }
+    var hasPushedPaused by remember { mutableStateOf(false) }
     LaunchedEffect(webController.isReady, state.playback, state.lyricsOffsetMs) {
+        if (!state.playback.isPlaying) {
+            // Allow one final sync when pausing, then stop until playback resumes
+            if (hasPushedPaused) return@LaunchedEffect
+            hasPushedPaused = true
+        } else {
+            hasPushedPaused = false
+        }
         val now = SystemClock.elapsedRealtime()
         val elapsed = now - lastPlaybackPushMs
         if (elapsed < 150L) {
@@ -226,6 +236,34 @@ private fun LyricsOverlay(
         }
     }
 
+    LaunchedEffect(webController.isReady, state.deviceUiMode, isMultiPane) {
+        if (!isMultiPane && state.deviceUiMode == 0) {
+            webController.webView.evaluateJavascript(
+                """
+                (function(){
+                    var old = document.getElementById('phone-ui-lyrics-top');
+                    if (old) old.remove();
+                    var style = document.createElement('style');
+                    style.id = 'phone-ui-lyrics-top';
+                    style.textContent = '.stage:not(.right-aligned):not(.full-lyrics-mode) .lyrics { top: 7vh !important; }';
+                    document.head.appendChild(style);
+                })();
+                """.trimIndent(),
+                null
+            )
+        } else {
+            webController.webView.evaluateJavascript(
+                """
+                (function(){
+                    var old = document.getElementById('phone-ui-lyrics-top');
+                    if (old) old.remove();
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
     LaunchedEffect(isButtonVisible, isExpanded) {
         if (isButtonVisible && !isExpanded) {
             delay(4000)
@@ -284,7 +322,7 @@ private fun LyricsOverlay(
                 val webView = webController.webView
                 (webView.parent as? ViewGroup)?.removeView(webView)
                 webView.layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
                 webView
@@ -299,6 +337,7 @@ private fun LyricsOverlay(
                 state = state,
                 onOpenSpotify = onOpenSpotify,
                 onOpenNotificationAccess = onOpenNotificationAccess,
+                isMultiPane = isMultiPane,
                 modifier = Modifier
                     .fillMaxSize()
                     .background(AppBackground)
@@ -338,11 +377,11 @@ private fun LyricsOverlay(
                     // Left Column: Album art + info as one centered visual group
                     Column(
                         modifier = Modifier
-                            .weight(0.45f)
+                            .weight(if (state.deviceUiMode == 0) 0.38f else 0.45f)
                             .fillMaxHeight()
                             .statusBarsPadding()
                             .navigationBarsPadding()
-                            .padding(horizontal = 24.dp, vertical = 16.dp),
+                            .padding(horizontal = if (state.deviceUiMode == 0) 20.dp else 24.dp, vertical = if (state.deviceUiMode == 0) 12.dp else 16.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
@@ -350,40 +389,40 @@ private fun LyricsOverlay(
                             bitmap = state.nowPlaying.albumArt,
                             startColorHex = state.nowPlaying.backgroundStart,
                             endColorHex = state.nowPlaying.backgroundEnd,
-                            modifier = Modifier.size(150.dp)
+                            modifier = Modifier.size(if (state.deviceUiMode == 0) 160.dp else 300.dp)
                         )
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(if (state.deviceUiMode == 0) 12.dp else 20.dp))
 
                         Text(
                             text = state.nowPlaying.track,
                             color = Color.White,
-                            fontSize = 18.sp,
+                            fontSize = if (state.deviceUiMode == 0) 16.sp else 18.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            lineHeight = 24.sp,
+                            lineHeight = if (state.deviceUiMode == 0) 20.sp else 24.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(if (state.deviceUiMode == 0) 3.dp else 4.dp))
                         Text(
                             text = state.nowPlaying.artist,
                             color = Color(0xB3FFFFFF),
-                            fontSize = 13.sp,
+                            fontSize = if (state.deviceUiMode == 0) 11.sp else 13.sp,
                             fontWeight = FontWeight.Medium,
-                            lineHeight = 18.sp,
+                            lineHeight = if (state.deviceUiMode == 0) 15.sp else 18.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        Spacer(modifier = Modifier.height(18.dp))
+                        Spacer(modifier = Modifier.height(if (state.deviceUiMode == 0) 12.dp else 18.dp))
 
                         // Playback controls row
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(if (state.deviceUiMode == 0) 16.dp else 24.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             PlayPauseButton(
@@ -393,7 +432,7 @@ private fun LyricsOverlay(
 
                             Box(
                                 modifier = Modifier
-                                    .height(20.dp)
+                                    .height(28.dp)
                                     .width(1.dp)
                                     .background(Color(0x26FFFFFF))
                             )
@@ -601,6 +640,13 @@ private fun LyricsOverlay(
                                         viewModel.toggleKeepScreenOn()
                                     }
                                     MenuActionRow(
+                                        label = if (state.deviceUiMode == 0) "UI模式: 手机" else "UI模式: Pad",
+                                        emoji = "📱",
+                                        active = state.deviceUiMode == 1
+                                    ) {
+                                        viewModel.toggleDeviceUiMode()
+                                    }
+                                    MenuActionRow(
                                         label = if (state.showFloatingLyrics) "桌面歌词: 开启" else "桌面歌词: 关闭",
                                         emoji = "📱",
                                         active = state.showFloatingLyrics
@@ -649,6 +695,13 @@ private fun LyricsOverlay(
                              ) {
                                  viewModel.cycleReadingMode()
                              }
+                            MenuActionRow(
+                                label = if (state.deviceUiMode == 0) "UI模式: 手机" else "UI模式: Pad",
+                                emoji = "📱",
+                                active = state.deviceUiMode == 1
+                            ) {
+                                viewModel.toggleDeviceUiMode()
+                            }
                             MenuActionRow(
                                 label = if (state.keepScreenOn) "屏幕常亮: 开启" else "屏幕常亮: 关闭",
                                 emoji = "💡",
@@ -834,94 +887,185 @@ private fun EmptyOverlay(
     state: LyricsUiState,
     onOpenSpotify: () -> Unit,
     onOpenNotificationAccess: () -> Unit,
+    isMultiPane: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val hasTrack = state.nowPlaying.hasTrack
     val isLoading = state.isLoadingLyrics
 
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        if (hasTrack && !isLoading) {
-            // Instrumental / no lyrics found state — clean centered display
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "♪",
-                    color = Color(0x66FFFFFF),
-                    fontSize = 64.sp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "纯音乐 / 无歌词",
-                    color = Color(0xB3FFFFFF),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "${state.nowPlaying.track} - ${state.nowPlaying.artist}",
-                    color = Color(0x66FFFFFF),
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        } else if (hasTrack && isLoading) {
-            // Loading lyrics state
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "正在搜索歌词...",
-                    color = Color(0xB3FFFFFF),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "${state.nowPlaying.track} - ${state.nowPlaying.artist}",
-                    color = Color(0x66FFFFFF),
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+    Box(modifier = modifier.fillMaxSize()) {
+        if (isMultiPane) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Left 45%
+                Box(modifier = Modifier.weight(0.45f).fillMaxHeight()) {
+                    if (!hasTrack) {
+                        // Welcome state: "Lyrics Plus" at top 1/4
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(0.dp)
+                        ) {
+                            Spacer(modifier = Modifier.weight(0.25f))
+                            Text(
+                                text = state.message,
+                                color = Color.White,
+                                fontSize = 30.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                lineHeight = 36.sp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "${state.playbackSource} - ${state.playback.positionMs / 1000}s",
+                                color = Color(0xFF8D9490),
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(22.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Button(
+                                    onClick = onOpenSpotify,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("打开 Spotify")
+                                }
+                                Button(
+                                    onClick = onOpenNotificationAccess,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Color.White),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("通知访问权限")
+                                }
+                            }
+                            Spacer(modifier = Modifier.weight(0.75f))
+                        }
+                    }
+                }
+
+                // Right 55% — centered loading / no-lyrics / empty
+                Box(
+                    modifier = Modifier.weight(0.55f).fillMaxHeight(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (hasTrack && !isLoading) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "♪",
+                                color = Color(0x66FFFFFF),
+                                fontSize = 64.sp
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "纯音乐 / 无歌词",
+                                color = Color(0xB3FFFFFF),
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "${state.nowPlaying.track} - ${state.nowPlaying.artist}",
+                                color = Color(0x66FFFFFF),
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    } else if (hasTrack && isLoading) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "正在搜索歌词...",
+                                color = Color(0xB3FFFFFF),
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "${state.nowPlaying.track} - ${state.nowPlaying.artist}",
+                                color = Color(0x66FFFFFF),
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
         } else {
-            // No track playing — setup/welcome state
-            Column(
-                horizontalAlignment = Alignment.Start
+            // Portrait: full-screen centered layout
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = state.message,
-                    color = Color.White,
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    lineHeight = 36.sp
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "${state.playbackSource} - ${state.playback.positionMs / 1000}s",
-                    color = Color(0xFF8D9490),
-                    fontSize = 14.sp
-                )
-                Spacer(modifier = Modifier.height(22.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
-                        onClick = onOpenSpotify,
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("打开 Spotify")
+                if (hasTrack && !isLoading) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "♪",
+                            color = Color(0x66FFFFFF),
+                            fontSize = 64.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "纯音乐 / 无歌词",
+                            color = Color(0xB3FFFFFF),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "${state.nowPlaying.track} - ${state.nowPlaying.artist}",
+                            color = Color(0x66FFFFFF),
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    Button(
-                        onClick = onOpenNotificationAccess,
-                        colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Color.White),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("通知访问权限")
+                } else if (hasTrack && isLoading) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "正在搜索歌词...",
+                            color = Color(0xB3FFFFFF),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "${state.nowPlaying.track} - ${state.nowPlaying.artist}",
+                            color = Color(0x66FFFFFF),
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else {
+                    Column(horizontalAlignment = Alignment.Start) {
+                        Text(
+                            text = state.message,
+                            color = Color.White,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            lineHeight = 36.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "${state.playbackSource} - ${state.playback.positionMs / 1000}s",
+                            color = Color(0xFF8D9490),
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(22.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                onClick = onOpenSpotify,
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("打开 Spotify")
+                            }
+                            Button(
+                                onClick = onOpenNotificationAccess,
+                                colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Color.White),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("通知访问权限")
+                            }
+                        }
                     }
                 }
             }
@@ -1313,7 +1457,7 @@ private fun PlayPauseButton(
 ) {
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(56.dp)
             .clickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null
@@ -1321,7 +1465,7 @@ private fun PlayPauseButton(
         contentAlignment = Alignment.Center
     ) {
         if (isPlaying) {
-            Canvas(modifier = Modifier.size(24.dp)) {
+            Canvas(modifier = Modifier.size(32.dp)) {
                 val barWidth = size.width * 0.18f
                 val gap = size.width * 0.22f
                 val h = size.height * 0.55f
@@ -1341,7 +1485,7 @@ private fun PlayPauseButton(
                 )
             }
         } else {
-            Canvas(modifier = Modifier.size(24.dp)) {
+            Canvas(modifier = Modifier.size(32.dp)) {
                 val path = Path().apply {
                     moveTo(size.width * 0.32f, size.height * 0.22f)
                     lineTo(size.width * 0.82f, size.height * 0.5f)
@@ -1361,14 +1505,14 @@ private fun SkipNextButton(
 ) {
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(56.dp)
             .clickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null
             ) { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(24.dp)) {
+        Canvas(modifier = Modifier.size(32.dp)) {
             val path = Path().apply {
                 moveTo(size.width * 0.22f, size.height * 0.24f)
                 lineTo(size.width * 0.64f, size.height * 0.5f)
