@@ -8,52 +8,26 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.net.URLEncoder
 import kotlin.math.abs
 
 class QQMusicClient {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
         runCatching {
             val searchResult = searchSongMid(track) ?: error("QQ 音乐未找到歌曲")
-            
-            // 1. Try Vkeys API
-            val vkeysResult = runCatching {
-                val url = "https://api.vkeys.cn/v2/music/tencent/lyric?mid=${searchResult.mid}"
-                val response = requestGet(url)
-                if (response.code !in 200..299) error("Vkeys 返回异常 (${response.code})")
-                
-                val json = JSONObject(response.body)
-                if (json.optInt("code", -1) != 200) error("Vkeys 接口异常: ${json.optString("message")}")
-                
-                val dataObj = json.getJSONObject("data")
-                val yrc = dataObj.optString("yrc").orEmpty()
-                val lrc = dataObj.optString("lrc").orEmpty()
-                val trans = dataObj.optString("trans").orEmpty()
-                val roma = dataObj.optString("roma").orEmpty()
-                
-                val syncedBase = if (yrc.isNotBlank()) yrc else lrc
-                if (syncedBase.isBlank()) error("Vkeys 歌词为空")
-                
-                val synced = LrcParser.parse(syncedBase).ifEmpty { error("Vkeys 解析后的歌词为空") }
-                val translation = LrcParser.parse(trans).filter { line ->
-                    val clean = line.text.trim()
-                    !(clean.all { it == '/' } && clean.isNotEmpty())
-                }
-                val reading = LrcParser.parse(roma)
-                
-                val mergedTrans = mergeTranslation(synced, translation)
-                val mergedReading = mergeReading(mergedTrans, reading)
-                
-                LyricsSearchResult(mergedReading, searchResult.score)
+
+            // Prefer QQ Music's first-party API. It returns encrypted QRC data,
+            // which is decrypted locally without relying on a third-party service.
+            val officialResult = runCatching {
+                fetchOfficialLyrics(searchResult)
             }
-            
-            // 2. Return Vkeys result if successful
-            if (vkeysResult.isSuccess) {
-                return@runCatching vkeysResult.getOrThrow()
+            if (officialResult.isSuccess) {
+                return@runCatching officialResult.getOrThrow()
             }
-            
-            // 3. Fallback to Official QQ Music API on failure
-            val lyricData = fetchLyrics(searchResult.mid) ?: error("QQ 音乐未找到歌词 (Vkeys 和官方接口均失败)")
+
+            // The legacy endpoint remains the last fallback for clients or songs
+            // that do not expose PlayLyricInfo/QRC data.
+            val lyricData = fetchLegacyLyrics(searchResult.mid)
+                ?: error("QQ 音乐未找到歌词 (新版和旧版接口均失败)")
             
             val lyricBase64 = lyricData.optString("lyric").orEmpty()
             val transBase64 = lyricData.optString("trans").orEmpty()
@@ -77,6 +51,41 @@ class QQMusicClient {
             val merged = mergeTranslation(synced, translation)
             LyricsSearchResult(merged, searchResult.score)
         }
+    }
+
+    private fun fetchOfficialLyrics(searchResult: QQMusicSearchResult): LyricsSearchResult {
+        val data = fetchOfficialLyricData(searchResult.mid)
+            ?: error("QQ 音乐新版歌词接口无数据")
+        val encrypted = data.optInt("crypt") == 1
+
+        fun decodeField(name: String): String {
+            val value = data.optString(name).orEmpty()
+            if (value.isBlank()) return ""
+
+            val decrypted = if (encrypted) {
+                QqMusicQrcDecryptor.decrypt(value)
+            } else {
+                value
+            }
+            return QrcPayloadParser.extract(decrypted)
+        }
+
+        val rawLyric = decodeField("lyric")
+        if (rawLyric.isBlank()) error("QQ 音乐新版歌词为空")
+
+        val synced = LrcParser.parse(rawLyric)
+            .ifEmpty { error("QQ 音乐新版歌词解析为空") }
+        val translation = LrcParser.parse(decodeField("trans")).filter(::isUsefulAuxiliaryLine)
+        val reading = LrcParser.parse(decodeField("roma"))
+
+        val mergedTranslation = mergeTranslation(synced, translation)
+        val mergedReading = mergeReading(mergedTranslation, reading)
+        return LyricsSearchResult(mergedReading, searchResult.score)
+    }
+
+    private fun isUsefulAuxiliaryLine(line: LyricsLine): Boolean {
+        val clean = line.text.trim()
+        return !(clean.all { it == '/' } && clean.isNotEmpty())
     }
 
     private fun unescapeHtml(text: String): String {
@@ -165,7 +174,50 @@ class QQMusicClient {
 
     private data class QQMusicSearchResult(val mid: String, val score: Int)
 
-    private fun fetchLyrics(songMid: String): JSONObject? {
+    private fun fetchOfficialLyricData(songMid: String): JSONObject? {
+        val params = JSONObject()
+            .put("songMid", songMid)
+            .put("crypt", 1)
+            .put("lrc_t", 0)
+            .put("qrc", 1)
+            .put("qrc_t", 0)
+            .put("trans", 1)
+            .put("trans_t", 0)
+            .put("roma", 1)
+            .put("roma_t", 0)
+            .put("type", 1)
+            .put("ct", QQ_MUSIC_CLIENT_TYPE)
+            .put("cv", QQ_MUSIC_CLIENT_VERSION)
+
+        val requestData = JSONObject()
+            .put("module", "music.musichallSong.PlayLyricInfo")
+            .put("method", "GetPlayLyricInfo")
+            .put("param", params)
+
+        val common = JSONObject()
+            .put("ct", QQ_MUSIC_CLIENT_TYPE)
+            .put("cv", QQ_MUSIC_CLIENT_VERSION)
+            .put("v", QQ_MUSIC_CLIENT_VERSION)
+            .put("uin", "0")
+            .put("format", "json")
+
+        val payload = JSONObject()
+            .put("comm", common)
+            .put("req_0", requestData)
+
+        val response = requestPost(
+            url = MUSIC_U_API,
+            jsonPayload = payload.toString(),
+            userAgent = QQ_MUSIC_ANDROID_USER_AGENT
+        )
+        if (response.code !in 200..299) return null
+
+        val requestResult = JSONObject(response.body).optJSONObject("req_0") ?: return null
+        if (requestResult.optInt("code", -1) != 0) return null
+        return requestResult.optJSONObject("data")
+    }
+
+    private fun fetchLegacyLyrics(songMid: String): JSONObject? {
         val url = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=$songMid&format=json&g_tk=5381"
         val response = requestGet(url)
         if (response.code !in 200..299) return null
@@ -196,7 +248,11 @@ class QQMusicClient {
         }
     }
 
-    private fun requestPost(url: String, jsonPayload: String): HttpResponse {
+    private fun requestPost(
+        url: String,
+        jsonPayload: String,
+        userAgent: String = WEB_USER_AGENT
+    ): HttpResponse {
         val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
         val requestBody = jsonPayload.toRequestBody(mediaType)
 
@@ -204,7 +260,7 @@ class QQMusicClient {
             .url(url)
             .post(requestBody)
             .header("Referer", "https://y.qq.com/")
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("User-Agent", userAgent)
             .build()
 
         return HttpClient.okHttpClient.newCall(request).execute().use { response ->
@@ -215,7 +271,15 @@ class QQMusicClient {
         }
     }
 
-    private fun String.urlEncode(): String = URLEncoder.encode(this, Charsets.UTF_8.name())
-
     private data class HttpResponse(val code: Int, val body: String)
+
+    private companion object {
+        const val MUSIC_U_API = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+        const val QQ_MUSIC_CLIENT_TYPE = 11
+        const val QQ_MUSIC_CLIENT_VERSION = 14090008
+        const val QQ_MUSIC_ANDROID_USER_AGENT = "QQMusic 14090008(android 15)"
+        const val WEB_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 }
