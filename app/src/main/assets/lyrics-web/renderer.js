@@ -822,16 +822,19 @@
       var lengthClass = getLengthClass(line);
       var kind = getKindClass(distance);
       var direction = getDirectionClass(distance);
+      var timingClass = parseSyllables(line.text || "", Number(line.startTimeMs || 0)).length > 0
+        ? "word-synced"
+        : "line-synced";
 
       var isActive = distance === 0;
 
       if (state.isFullLyricsMode) {
-        html += '<article class="line ' + kind + " " + direction + " " + lengthClass + '"' +
+        html += '<article class="line ' + kind + " " + direction + " " + lengthClass + " " + timingClass + '"' +
           ' data-index="' + i + '">' +
           buildLineInnerHTML(line, isActive, state.lyrics[i + 1], distance < 0) +
           "</article>";
       } else {
-        html += '<article class="line ' + kind + " " + direction + " " + lengthClass + '"' +
+        html += '<article class="line ' + kind + " " + direction + " " + lengthClass + " " + timingClass + '"' +
           ' data-index="' + i + '"' +
           ' style="' + getDistanceStyle(distance) + '">' +
           buildLineInnerHTML(line, isActive, state.lyrics[i + 1], distance < 0) +

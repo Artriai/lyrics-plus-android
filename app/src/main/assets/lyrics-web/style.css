@@ -357,13 +357,22 @@ body {
   display: block;
 }
 
-/* Past lines slightly dimmer than future lines */
+/* Completed line-synced lyrics stay highlighted. Word-synced lyrics keep
+   using their per-syllable .past state instead. */
 .stage.full-lyrics-mode .line.past .text {
   color: rgba(255, 255, 255, 0.25);
 }
 
 .stage.full-lyrics-mode .line.past .translation {
   color: rgba(255, 255, 255, 0.14);
+}
+
+.stage.full-lyrics-mode .line.line-synced.past .text {
+  color: #ffffff;
+}
+
+.stage.full-lyrics-mode .line.line-synced.past .translation {
+  color: rgba(255, 255, 255, 0.58);
 }
 
 .lyrics-viewport {
