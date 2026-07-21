@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*' # 当推送以 v 开头的标签（例如 v1.0.0）时触发
+    branches:
+      - main
+    paths:
+      - 'app/build.gradle.kts'
   workflow_dispatch: # 允许在 GitHub Actions 页面手动触发构建
 
 jobs:
@@ -27,6 +31,25 @@ jobs:
 
       - name: Grant Execute Permission for Gradlew
         run: chmod +x gradlew
+
+      - name: Resolve Release Version
+        id: version
+        shell: bash
+        run: |
+          VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          if [[ -z "${VERSION_NAME}" ]]; then
+            echo "Unable to resolve versionName from app/build.gradle.kts" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="v${VERSION_NAME}"
+          fi
+
+          echo "version_name=${VERSION_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
 
       # 步骤 1：使用官方构建脚本编译 release 版本
       # 该脚本会注入公开统计端点，保证本地官方构建与 GitHub Actions 构建一致。
@@ -63,10 +86,11 @@ jobs:
         with:
           files: |
             app/build/outputs/apk/release/app-release.apk
-          name: Release ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: Release ${{ steps.version.outputs.tag }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           body: |
-            ## 📦 Release ${{ github.ref_name }}
+            ## 📦 Release ${{ steps.version.outputs.tag }}
             
             ### 🔒 文件校验和 (SHA-256 Checksums)
             * **app-release.apk**: `${{ steps.calc_sha.outputs.sha256 }}`
