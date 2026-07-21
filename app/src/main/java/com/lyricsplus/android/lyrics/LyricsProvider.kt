@@ -133,7 +133,6 @@ class LyricsProvider(
                     throw (neteaseErr as? java.io.IOException) ?: (qqErr as? java.io.IOException) ?: neteaseErr ?: qqErr ?: Exception("网络错误")
                 } else {
                     val instrumental = listOf(LyricsLine(0L, "纯音乐 / 无歌词"))
-                    cacheDb.saveLyrics(trackKey, instrumental, "纯音乐")
                     val result = CachedLyricsResult(instrumental, "纯音乐", score = 0)
                     inMemoryCache["$trackKey|纯音乐"] = result
                     return@runCatching result

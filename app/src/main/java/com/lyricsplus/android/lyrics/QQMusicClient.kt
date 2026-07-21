@@ -5,6 +5,7 @@ import com.lyricsplus.android.data.NowPlaying
 import com.lyricsplus.android.data.LyricsSearchResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
@@ -102,28 +103,24 @@ class QQMusicClient {
 
     private fun searchSongMid(track: NowPlaying): QQMusicSearchResult? {
         val query = "${track.track} ${track.artist}"
-        
-        val paramJson = JSONObject()
-            .put("query", query)
-            .put("page_num", 1)
-            .put("num_per_page", 10)
-            .put("search_type", 0)
 
-        val serviceJson = JSONObject()
-            .put("method", "DoSearchForQQMusicDesktop")
-            .put("module", "music.search.SearchCgiService")
-            .put("param", paramJson)
-
-        val payloadJson = JSONObject()
-            .put("music.search.SearchCgiService", serviceJson)
-
-        val response = requestPost("https://u.y.qq.com/cgi-bin/musicu.fcg", payloadJson.toString())
+        // The unsigned SearchCgiService musicu request now returns an empty
+        // song list. QQ's public search endpoint still provides the MID needed
+        // by GetPlayLyricInfo, while lyric retrieval itself remains on musicu.
+        val url = QQ_MUSIC_SEARCH_API.toHttpUrl().newBuilder()
+            .addQueryParameter("w", query)
+            .addQueryParameter("format", "json")
+            .addQueryParameter("p", "1")
+            .addQueryParameter("n", "10")
+            .addQueryParameter("aggr", "1")
+            .addQueryParameter("cr", "1")
+            .build()
+        val response = requestGet(url.toString())
         if (response.code !in 200..299) return null
 
         val json = JSONObject(response.body)
-        val songs = json.optJSONObject("music.search.SearchCgiService")
-            ?.optJSONObject("data")
-            ?.optJSONObject("body")
+        if (json.optInt("code", -1) != 0) return null
+        val songs = json.optJSONObject("data")
             ?.optJSONObject("song")
             ?.optJSONArray("list")
             ?: return null
@@ -137,8 +134,8 @@ class QQMusicClient {
 
         for (i in 0 until songs.length()) {
             val song = songs.getJSONObject(i)
-            val name = song.optString("name").lowercase().replace("\\s+".toRegex(), "")
-            val album = song.optJSONObject("album")?.optString("name").orEmpty().lowercase().replace("\\s+".toRegex(), "")
+            val name = song.optString("songname").lowercase().replace("\\s+".toRegex(), "")
+            val album = song.optString("albumname").lowercase().replace("\\s+".toRegex(), "")
             
             val singersArray = song.optJSONArray("singer")
             val singers = StringBuilder()
@@ -165,7 +162,7 @@ class QQMusicClient {
 
             if (score > bestScore && score > 0) {
                 bestScore = score
-                bestMid = song.optString("mid")
+                bestMid = song.optString("songmid")
             }
         }
 
@@ -275,6 +272,7 @@ class QQMusicClient {
 
     private companion object {
         const val MUSIC_U_API = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+        const val QQ_MUSIC_SEARCH_API = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
         const val QQ_MUSIC_CLIENT_TYPE = 11
         const val QQ_MUSIC_CLIENT_VERSION = 14090008
         const val QQ_MUSIC_ANDROID_USER_AGENT = "QQMusic 14090008(android 15)"

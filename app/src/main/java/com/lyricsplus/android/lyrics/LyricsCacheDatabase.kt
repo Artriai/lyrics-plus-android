@@ -42,6 +42,13 @@ class LyricsCacheDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE
                 arrayOf("网易云音乐", "QQ音乐")
             )
         }
+        if (oldVersion < 4) {
+            db.delete(
+                TABLE_LYRICS,
+                "$COLUMN_SOURCE = ?",
+                arrayOf("纯音乐")
+            )
+        }
     }
 
     fun getLyrics(trackKey: String): CachedLyricsResult? {
@@ -136,7 +143,7 @@ class LyricsCacheDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE
 
     companion object {
         private const val DATABASE_NAME = "lyrics_cache.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
         private const val TABLE_LYRICS = "cached_lyrics"
         private const val COLUMN_KEY = "track_key"
         private const val COLUMN_CONTENT = "content"
