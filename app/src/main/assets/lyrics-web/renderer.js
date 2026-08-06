@@ -312,6 +312,23 @@
     }
   }
 
+  function setInactiveLineSyllables(lineEl, completed) {
+    var syllables = lineEl.querySelectorAll(".syllable");
+    if (!syllables.length) return;
+
+    var targetClass = completed ? "syllable past" : "syllable";
+    var progress = completed ? "100%" : "0%";
+    for (var i = 0; i < syllables.length; i += 1) {
+      var syllable = syllables[i];
+      if (syllable.className !== targetClass) {
+        syllable.className = targetClass;
+      }
+      if (syllable.style.getPropertyValue("--progress") !== progress) {
+        syllable.style.setProperty("--progress", progress);
+      }
+    }
+  }
+
   var vrrToggle = false;
   function tick() {
     if (playback.isPlaying) {
@@ -876,6 +893,8 @@
     for (var i = 0; i < lines.length; i += 1) {
       var el = lines[i];
       var distance = i - active;
+      var wasPast = el.classList.contains("past");
+      var wasFuture = el.classList.contains("future");
       // Remove old state classes
       el.classList.remove("active", "near", "far", "past", "future");
       // Add new state classes
@@ -888,8 +907,17 @@
       }
       if (distance < 0) {
         el.classList.add("past");
+        if (!wasPast) {
+          // RAF is suspended while the app is backgrounded, so playback can
+          // skip whole lines. Complete every syllable that just became past.
+          setInactiveLineSyllables(el, true);
+        }
       } else if (distance > 0) {
         el.classList.add("future");
+        if (!wasFuture) {
+          // A backward seek can move completed lines into the future again.
+          setInactiveLineSyllables(el, false);
+        }
       }
     }
 
