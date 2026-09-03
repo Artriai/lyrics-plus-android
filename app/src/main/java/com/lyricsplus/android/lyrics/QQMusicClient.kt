@@ -11,7 +11,91 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import kotlin.math.abs
 
+import com.lyricsplus.android.data.SongSearchResult
+
 class QQMusicClient {
+    suspend fun searchSongs(query: String, limit: Int = 20): List<SongSearchResult> = withContext(Dispatchers.IO) {
+        val url = QQ_MUSIC_SEARCH_API.toHttpUrl().newBuilder()
+            .addQueryParameter("w", query)
+            .addQueryParameter("format", "json")
+            .addQueryParameter("p", "1")
+            .addQueryParameter("n", limit.toString())
+            .addQueryParameter("aggr", "1")
+            .addQueryParameter("cr", "1")
+            .build()
+        val response = requestGet(url.toString())
+        if (response.code !in 200..299) return@withContext emptyList()
+
+        val json = JSONObject(response.body)
+        if (json.optInt("code", -1) != 0) return@withContext emptyList()
+        val songs = json.optJSONObject("data")
+            ?.optJSONObject("song")
+            ?.optJSONArray("list")
+            ?: return@withContext emptyList()
+
+        (0 until songs.length()).mapNotNull { i ->
+            val song = songs.optJSONObject(i) ?: return@mapNotNull null
+            val mid = song.optString("songmid")
+            if (mid.isBlank()) return@mapNotNull null
+            val name = song.optString("songname")
+            val album = song.optString("albumname")
+            val singersArray = song.optJSONArray("singer")
+            val singers = StringBuilder()
+            if (singersArray != null) {
+                for (j in 0 until singersArray.length()) {
+                    if (singers.isNotEmpty()) singers.append(" / ")
+                    singers.append(singersArray.optJSONObject(j)?.optString("name").orEmpty())
+                }
+            }
+            val durationSeconds = song.optLong("interval", 0L)
+
+            SongSearchResult(
+                id = mid,
+                title = name,
+                artist = singers.toString(),
+                album = album,
+                durationSeconds = durationSeconds,
+                source = "QQ音乐"
+            )
+        }
+    }
+
+    suspend fun fetchLyricsByMid(songMid: String): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val officialResult = runCatching {
+                fetchOfficialLyrics(QQMusicSearchResult(songMid, 100))
+            }
+            if (officialResult.isSuccess) {
+                return@runCatching officialResult.getOrThrow()
+            }
+
+            val lyricData = fetchLegacyLyrics(songMid)
+                ?: error("QQ 音乐未找到歌词 (新版和旧版接口均失败)")
+            
+            val lyricBase64 = lyricData.optString("lyric").orEmpty()
+            val transBase64 = lyricData.optString("trans").orEmpty()
+            
+            if (lyricBase64.isBlank()) error("QQ 音乐歌词为空")
+
+            val rawLyricEncoded = String(android.util.Base64.decode(lyricBase64, android.util.Base64.DEFAULT), Charsets.UTF_8)
+            val rawTransEncoded = if (transBase64.isNotBlank()) {
+                String(android.util.Base64.decode(transBase64, android.util.Base64.DEFAULT), Charsets.UTF_8)
+            } else ""
+
+            val rawLyric = unescapeHtml(rawLyricEncoded)
+            val rawTrans = unescapeHtml(rawTransEncoded)
+
+            val synced = LrcParser.parse(rawLyric).ifEmpty { error("QQ 音乐同步歌词为空") }
+            val translation = LrcParser.parse(rawTrans).filter { line ->
+                val clean = line.text.trim()
+                !(clean.all { it == '/' } && clean.isNotEmpty())
+            }
+
+            val merged = mergeTranslation(synced, translation)
+            LyricsSearchResult(merged, 100)
+        }
+    }
+
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
         runCatching {
             val searchResult = searchSongMid(track) ?: error("QQ 音乐未找到歌曲")

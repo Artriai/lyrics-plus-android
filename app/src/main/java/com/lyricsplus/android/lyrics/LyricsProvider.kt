@@ -168,43 +168,101 @@ class LyricsProvider(
                 else -> error("未知歌词源: $sourceName")
             }
 
-            val base = searchResult.lyrics
-            val hasKana = base.any { line -> line.text.hasJapaneseKana() }
+            val result = CachedLyricsResult(processLyricsReading(searchResult.lyrics), sourceName, searchResult.score)
+            inMemoryCache[memKey] = result
+            result
+        }
+    }
 
-            val processed = base.map { line ->
-                val existingReading = line.reading.orEmpty()
-                val reading = if (existingReading.isNotBlank()) {
-                    if (existingReading.startsWith("{")) {
-                        existingReading
-                    } else {
-                        val cleanText = line.text.replace(timestampStripRegex, "").trim()
-                        val furigana = japaneseReader.furiganaFor(cleanText)
-                        org.json.JSONObject().apply {
-                            put("romaji", existingReading)
-                            put("furigana", furigana.orEmpty())
-                        }.toString()
-                    }
-                } else if (hasKana) {
+    suspend fun searchSongs(
+        query: String,
+        source: String? = null
+    ): List<com.lyricsplus.android.data.SongSearchResult> = withContext(Dispatchers.IO) {
+        when (source) {
+            "网易云音乐" -> neteaseClient.searchSongs(query)
+            "QQ音乐" -> qqMusicClient.searchSongs(query)
+            "LRCLIB" -> lrclibClient.searchSongs(query)
+            else -> {
+                val neteaseDeferred = async { runCatching { neteaseClient.searchSongs(query) }.getOrDefault(emptyList()) }
+                val qqDeferred = async { runCatching { qqMusicClient.searchSongs(query) }.getOrDefault(emptyList()) }
+                val lrclibDeferred = async { runCatching { lrclibClient.searchSongs(query) }.getOrDefault(emptyList()) }
+
+                val netease = neteaseDeferred.await()
+                val qq = qqDeferred.await()
+                val lrclib = lrclibDeferred.await()
+
+                // Interleave or combine results nicely
+                val combined = mutableListOf<com.lyricsplus.android.data.SongSearchResult>()
+                val maxLen = maxOf(netease.size, qq.size, lrclib.size)
+                for (i in 0 until maxLen) {
+                    if (i < netease.size) combined.add(netease[i])
+                    if (i < qq.size) combined.add(qq[i])
+                    if (i < lrclib.size) combined.add(lrclib[i])
+                }
+                combined
+            }
+        }
+    }
+
+    suspend fun fetchAndApplyManualLyric(
+        track: NowPlaying,
+        songResult: com.lyricsplus.android.data.SongSearchResult
+    ): Result<CachedLyricsResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
+            val searchResult = when (songResult.source) {
+                "网易云音乐" -> neteaseClient.fetchLyricsById(songResult.id.toLong()).getOrThrow()
+                "QQ音乐" -> qqMusicClient.fetchLyricsByMid(songResult.id).getOrThrow()
+                "LRCLIB" -> lrclibClient.fetchLyricsById(songResult.id.toLong()).getOrThrow()
+                else -> error("未知歌词源: ${songResult.source}")
+            }
+
+            val processedLyrics = processLyricsReading(searchResult.lyrics)
+            val sourceLabel = "${songResult.source}"
+            val result = CachedLyricsResult(processedLyrics, sourceLabel, 150)
+
+            // Save to SQLite database cache to permanently override auto match for this track
+            cacheDb.saveLyrics(trackKey, processedLyrics, sourceLabel)
+
+            // Update in-memory cache
+            inMemoryCache["$trackKey|$sourceLabel"] = result
+            inMemoryCache["$trackKey|${songResult.source}"] = result
+
+            result
+        }
+    }
+
+    private fun processLyricsReading(base: List<LyricsLine>): List<LyricsLine> {
+        val hasKana = base.any { line -> line.text.hasJapaneseKana() }
+        return base.map { line ->
+            val existingReading = line.reading.orEmpty()
+            val reading = if (existingReading.isNotBlank()) {
+                if (existingReading.startsWith("{")) {
+                    existingReading
+                } else {
                     val cleanText = line.text.replace(timestampStripRegex, "").trim()
-                    val romaji = japaneseReader.readingFor(cleanText)
                     val furigana = japaneseReader.furiganaFor(cleanText)
-                    if (romaji != null || furigana != null) {
-                        org.json.JSONObject().apply {
-                            put("romaji", romaji.orEmpty())
-                            put("furigana", furigana.orEmpty())
-                        }.toString()
-                    } else {
-                        null
-                    }
+                    org.json.JSONObject().apply {
+                        put("romaji", existingReading)
+                        put("furigana", furigana.orEmpty())
+                    }.toString()
+                }
+            } else if (hasKana) {
+                val cleanText = line.text.replace(timestampStripRegex, "").trim()
+                val romaji = japaneseReader.readingFor(cleanText)
+                val furigana = japaneseReader.furiganaFor(cleanText)
+                if (romaji != null || furigana != null) {
+                    org.json.JSONObject().apply {
+                        put("romaji", romaji.orEmpty())
+                        put("furigana", furigana.orEmpty())
+                    }.toString()
                 } else {
                     null
                 }
-                line.copy(reading = reading)
+            } else {
+                null
             }
-
-            val result = CachedLyricsResult(processed, sourceName, searchResult.score)
-            inMemoryCache[memKey] = result
-            result
+            line.copy(reading = reading)
         }
     }
 

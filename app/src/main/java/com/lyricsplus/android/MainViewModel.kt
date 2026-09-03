@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 
+import com.lyricsplus.android.data.SongSearchResult
+
 const val PREF_PREFERRED_LYRICS_SOURCE = "preferred_lyrics_source"
 private const val PREF_AUTO_CHECK_UPDATES = "auto_check_updates"
 private const val PAUSE_FREEZE_TOLERANCE_MS = 2500L
@@ -47,7 +49,13 @@ data class LyricsUiState(
     val inAppFontScale: Float = 1.0f,
     val anonymousStatsEnabled: Boolean = true,
     val anonymousStatsAvailable: Boolean = false,
-    val autoCheckUpdatesEnabled: Boolean = true
+    val autoCheckUpdatesEnabled: Boolean = true,
+    val showCorrectionDialog: Boolean = false,
+    val correctionSearchQuery: String = "",
+    val correctionSelectedSource: String = "全部",
+    val correctionSearchResults: List<SongSearchResult> = emptyList(),
+    val isCorrectionSearching: Boolean = false,
+    val correctionErrorMessage: String? = null
 )
 
 class MainViewModel(
@@ -659,10 +667,14 @@ class MainViewModel(
         val intent = Intent(context, com.lyricsplus.android.lyrics.SuperIslandLyricsService::class.java).apply {
             putExtra(com.lyricsplus.android.lyrics.SuperIslandLyricsService.EXTRA_OFFSET, _uiState.value.lyricsOffsetMs)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }.onFailure { e ->
+            android.util.Log.e("MainViewModel", "Failed to start SuperIslandLyricsService: ${e.message}", e)
         }
     }
 
@@ -900,6 +912,154 @@ class MainViewModel(
                 com.lyricsplus.android.spotify.LyricsNotificationListenerService.latestSnapshot = snapshot
             } else {
                 _uiState.update { it.copy(isInitializing = false) }
+            }
+        }
+    }
+
+    fun openCorrectionDialog() {
+        val nowPlaying = _uiState.value.nowPlaying
+        val defaultQuery = if (nowPlaying.hasTrack) {
+            "${nowPlaying.track} ${nowPlaying.artist}".trim()
+        } else ""
+        _uiState.update {
+            it.copy(
+                showCorrectionDialog = true,
+                correctionSearchQuery = defaultQuery,
+                correctionSearchResults = emptyList(),
+                isCorrectionSearching = false,
+                correctionErrorMessage = null
+            )
+        }
+        if (defaultQuery.isNotBlank()) {
+            performCorrectionSearch(defaultQuery, _uiState.value.correctionSelectedSource)
+        }
+    }
+
+    fun closeCorrectionDialog() {
+        _uiState.update {
+            it.copy(
+                showCorrectionDialog = false,
+                isCorrectionSearching = false,
+                correctionErrorMessage = null
+            )
+        }
+    }
+
+    fun setCorrectionSearchQuery(query: String) {
+        _uiState.update { it.copy(correctionSearchQuery = query) }
+    }
+
+    fun setCorrectionSelectedSource(source: String) {
+        _uiState.update { it.copy(correctionSelectedSource = source) }
+        val query = _uiState.value.correctionSearchQuery.trim()
+        if (query.isNotBlank()) {
+            performCorrectionSearch(query, source)
+        }
+    }
+
+    fun performCorrectionSearch(
+        query: String = _uiState.value.correctionSearchQuery,
+        source: String = _uiState.value.correctionSelectedSource
+    ) {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) {
+            _uiState.update { it.copy(correctionSearchResults = emptyList(), isCorrectionSearching = false) }
+            return
+        }
+        _uiState.update { it.copy(isCorrectionSearching = true, correctionErrorMessage = null) }
+        viewModelScope.launch {
+            val results = lyricsProvider.searchSongs(cleanQuery, source.takeIf { it != "全部" })
+            _uiState.update {
+                it.copy(
+                    correctionSearchResults = results,
+                    isCorrectionSearching = false,
+                    correctionErrorMessage = if (results.isEmpty()) "未找到相关歌曲" else null
+                )
+            }
+        }
+    }
+
+    fun applyCorrectionSong(song: SongSearchResult) {
+        val nowPlaying = _uiState.value.nowPlaying
+        if (!nowPlaying.hasTrack) return
+
+        _uiState.update {
+            it.copy(
+                showCorrectionDialog = false,
+                isLoadingLyrics = true,
+                message = "正在应用已选歌词..."
+            )
+        }
+
+        viewModelScope.launch {
+            val result = lyricsProvider.fetchAndApplyManualLyric(nowPlaying, song)
+            _uiState.update { state ->
+                result.fold(
+                    onSuccess = { cacheResult ->
+                        currentLyricsScore = cacheResult.score
+                        state.copy(
+                            lyrics = cacheResult.lyrics,
+                            isLoadingLyrics = false,
+                            message = "已更新为手动修正歌词",
+                            activeLyricsSource = cacheResult.source
+                        )
+                    },
+                    onFailure = { error ->
+                        state.copy(
+                            isLoadingLyrics = false,
+                            message = "获取歌词失败: ${error.message ?: "未知错误"}"
+                        )
+                    }
+                )
+            }
+
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (result.isSuccess) {
+                    android.widget.Toast.makeText(getApplication(), "歌词修正已保存", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    android.widget.Toast.makeText(getApplication(), "歌词拉取失败", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            // Refresh floating lyrics service if running
+            val prefs = getApplication<Application>().getSharedPreferences("lyrics_plus_prefs", Context.MODE_PRIVATE)
+            if (prefs.getBoolean("show_floating_lyrics", false)) {
+                val intent = Intent(getApplication(), com.lyricsplus.android.lyrics.FloatingLyricsService::class.java).apply {
+                    action = com.lyricsplus.android.lyrics.FloatingLyricsService.ACTION_REFRESH_LYRICS
+                }
+                runCatching {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        getApplication<Application>().startForegroundService(intent)
+                    } else {
+                        getApplication<Application>().startService(intent)
+                    }
+                }
+            }
+        }
+    }
+
+    fun resetCorrectionToAutoMatch() {
+        val nowPlaying = _uiState.value.nowPlaying
+        if (!nowPlaying.hasTrack) return
+
+        _uiState.update {
+            it.copy(
+                showCorrectionDialog = false,
+                isLoadingLyrics = true,
+                message = "正在重新自动匹配..."
+            )
+        }
+
+        viewModelScope.launch {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                lyricsProvider.clearCache(nowPlaying)
+            }
+            preferredSource = null
+            prefs.edit().remove(PREF_PREFERRED_LYRICS_SOURCE).apply()
+            fetchLyrics(nowPlaying)
+
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                android.widget.Toast.makeText(getApplication(), "已重置并恢复自动匹配", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
