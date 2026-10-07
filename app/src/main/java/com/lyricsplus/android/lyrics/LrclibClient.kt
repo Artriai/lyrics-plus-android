@@ -10,7 +10,58 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import kotlin.math.abs
 
+import com.lyricsplus.android.data.SongSearchResult
+
 class LrclibClient {
+    suspend fun searchSongs(query: String): List<SongSearchResult> = withContext(Dispatchers.IO) {
+        val url = "https://lrclib.net/api/search?q=" + query.urlEncode()
+        val response = request(url)
+        if (response.code !in 200..299) return@withContext emptyList()
+
+        val results = runCatching { JSONArray(response.body) }.getOrNull() ?: return@withContext emptyList()
+        (0 until results.length()).mapNotNull { i ->
+            val obj = results.optJSONObject(i) ?: return@mapNotNull null
+            val id = obj.optLong("id")
+            if (id <= 0) return@mapNotNull null
+            val trackName = obj.optString("trackName")
+            val artistName = obj.optString("artistName")
+            val albumName = obj.optString("albumName")
+            val duration = obj.optLong("duration", 0L)
+            val hasSynced = obj.optString("syncedLyrics").isNotBlank() || obj.optString("enhancedLyrics").isNotBlank() || obj.optBoolean("instrumental", false)
+
+            SongSearchResult(
+                id = id.toString(),
+                title = trackName,
+                artist = artistName,
+                album = albumName,
+                durationSeconds = duration,
+                source = "LRCLIB",
+                hasSyncedLyrics = hasSynced
+            )
+        }
+    }
+
+    suspend fun fetchLyricsById(id: Long): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = request("https://lrclib.net/api/get/$id")
+            if (response.code !in 200..299) error("LRCLIB 未找到歌词 (HTTP ${response.code})")
+
+            val obj = JSONObject(response.body)
+            val isInstrumental = obj.optBoolean("instrumental", false)
+            val enhanced = obj.optString("enhancedLyrics")
+            val synced = obj.optString("syncedLyrics")
+
+            val lyrics = if (isInstrumental) {
+                listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
+            } else {
+                val lrcToParse = if (!enhanced.isNullOrBlank()) enhanced else synced
+                parseSynced(lrcToParse) ?: error("LRCLIB 歌词解析为空")
+            }
+
+            LyricsSearchResult(lyrics, 100)
+        }
+    }
+
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
         runCatching {
             fetchExact(track) ?: searchBestMatch(track) ?: error("LRCLIB 未找到同步歌词")

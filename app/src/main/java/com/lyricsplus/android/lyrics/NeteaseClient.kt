@@ -9,7 +9,63 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import kotlin.math.abs
 
+import com.lyricsplus.android.data.SongSearchResult
+
 class NeteaseClient {
+    suspend fun searchSongs(query: String, limit: Int = 20): List<SongSearchResult> = withContext(Dispatchers.IO) {
+        val cleanQuery = cleanTitle(query)
+        val url = "https://music.163.com/api/cloudsearch/pc?csrf_token=&type=1&offset=0&limit=$limit&s=" +
+            cleanQuery.urlEncode()
+        val response = request(url)
+        if (response.code !in 200..299) return@withContext emptyList()
+
+        val songs = JSONObject(response.body)
+            .optJSONObject("result")
+            ?.optJSONArray("songs")
+            ?: return@withContext emptyList()
+
+        (0 until songs.length()).mapNotNull { i ->
+            val song = songs.optJSONObject(i) ?: return@mapNotNull null
+            val id = song.optLong("id")
+            if (id <= 0) return@mapNotNull null
+            val name = song.optString("name")
+            val album = song.optJSONObject("al")?.optString("name") ?: song.optJSONObject("album")?.optString("name").orEmpty()
+            val artists = song.artistNames()
+            val durationMs = song.optLong("dt", song.optLong("duration", 0L))
+            val durationSeconds = if (durationMs > 0) (durationMs + 500) / 1000 else 0L
+
+            SongSearchResult(
+                id = id.toString(),
+                title = name,
+                artist = artists,
+                album = album,
+                durationSeconds = durationSeconds,
+                source = "网易云音乐"
+            )
+        }
+    }
+
+    suspend fun fetchLyricsById(songId: Long): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val lyricJson = fetchLyrics(songId) ?: error("网易云音乐未找到歌词")
+            if (lyricJson.optBoolean("nolyric", false)) {
+                return@runCatching LyricsSearchResult(listOf(LyricsLine(0L, "♪ 纯音乐 ♪")), 100)
+            }
+            val yrcString = lyricJson.optJSONObject("yrc")?.optString("lyric").orEmpty()
+            val lrcString = lyricJson.optJSONObject("lrc")?.optString("lyric").orEmpty()
+
+            val synced = if (yrcString.isNotBlank()) {
+                parseNeteaseYrc(yrcString)
+            } else {
+                parseNeteaseLrc(lrcString)
+            }.ifEmpty { error("网易云音乐同步歌词为空") }
+
+            val translation = parseNeteaseLrc(lyricJson.optJSONObject("tlyric")?.optString("lyric").orEmpty())
+            val merged = mergeTranslation(synced, translation)
+            LyricsSearchResult(merged, 100)
+        }
+    }
+
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
         runCatching {
             val searchResult = searchSongId(track) ?: error("网易云音乐未找到歌曲")

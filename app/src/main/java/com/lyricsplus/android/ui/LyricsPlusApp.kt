@@ -566,6 +566,10 @@ private fun LyricsOverlay(
                                     MenuActionRow(label = "切换歌词源 [当前: ${state.activeLyricsSource}]", emoji = "🎵") {
                                         viewModel.switchLyricsSource()
                                     }
+                                    MenuActionRow(label = "歌词纠错 / 手动搜词", emoji = "🔍") {
+                                        isExpanded = false
+                                        viewModel.openCorrectionDialog()
+                                    }
                                     LyricsOffsetAdjustRow(
                                         offsetText = offsetText,
                                         onAdvance = { viewModel.adjustOffset(-500) },
@@ -608,7 +612,7 @@ private fun LyricsOverlay(
                                         viewModel.toggleFloatingLyrics()
                                     }
                                     MenuActionRow(
-                                        label = if (state.showSuperIslandLyrics) "小米超级岛歌词: 开启" else "小米超级岛歌词: 关闭",
+                                        label = if (state.showSuperIslandLyrics) "超级岛歌词: 开启" else "超级岛歌词: 关闭",
                                         emoji = "🏝",
                                         active = state.showSuperIslandLyrics
                                     ) {
@@ -628,6 +632,10 @@ private fun LyricsOverlay(
                             MenuActionRow(label = "切换歌词源 [当前: ${state.activeLyricsSource}]", emoji = "🎵") {
                                 viewModel.switchLyricsSource()
                             }
+                            MenuActionRow(label = "歌词纠错 / 手动搜词", emoji = "🔍") {
+                                isExpanded = false
+                                viewModel.openCorrectionDialog()
+                            }
                             LyricsOffsetAdjustRow(
                                 offsetText = offsetText,
                                 onAdvance = { viewModel.adjustOffset(-500) },
@@ -637,18 +645,18 @@ private fun LyricsOverlay(
                             MenuActionRow(label = "重新取色", emoji = "🎨") {
                                 viewModel.rotatePaletteColors()
                             }
-                             val readingModeLabel = when (state.readingMode) {
-                                 0 -> "注音模式: 无"
-                                 1 -> "注音模式: 罗马音"
-                                 else -> "注音模式: 振假名"
-                             }
-                             MenuActionRow(
-                                 label = readingModeLabel,
-                                 emoji = "🔤",
-                                 active = state.readingMode > 0
-                             ) {
-                                 viewModel.cycleReadingMode()
-                             }
+                            val readingModeLabel = when (state.readingMode) {
+                                0 -> "注音模式: 无"
+                                1 -> "注音模式: 罗马音"
+                                else -> "注音模式: 振假名"
+                            }
+                            MenuActionRow(
+                                label = readingModeLabel,
+                                emoji = "🔤",
+                                active = state.readingMode > 0
+                            ) {
+                                viewModel.cycleReadingMode()
+                            }
                             MenuActionRow(
                                 label = if (state.keepScreenOn) "屏幕常亮: 开启" else "屏幕常亮: 关闭",
                                 emoji = "💡",
@@ -664,7 +672,7 @@ private fun LyricsOverlay(
                                 viewModel.toggleFloatingLyrics()
                             }
                             MenuActionRow(
-                                label = if (state.showSuperIslandLyrics) "小米超级岛歌词: 开启" else "小米超级岛歌词: 关闭",
+                                label = if (state.showSuperIslandLyrics) "超级岛歌词: 开启" else "超级岛歌词: 关闭",
                                 emoji = "🏝",
                                 active = state.showSuperIslandLyrics
                             ) {
@@ -789,6 +797,18 @@ private fun LyricsOverlay(
                 autoCheckUpdatesEnabled = state.autoCheckUpdatesEnabled,
                 onToggleAutoCheckUpdates = { viewModel.toggleAutoCheckUpdates() },
                 modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        if (state.showCorrectionDialog) {
+            LyricCorrectionDialog(
+                state = state,
+                onQueryChange = { viewModel.setCorrectionSearchQuery(it) },
+                onSourceChange = { viewModel.setCorrectionSelectedSource(it) },
+                onSearch = { viewModel.performCorrectionSearch() },
+                onSelectSong = { viewModel.applyCorrectionSong(it) },
+                onResetAutoMatch = { viewModel.resetCorrectionToAutoMatch() },
+                onDismiss = { viewModel.closeCorrectionDialog() }
             )
         }
     }

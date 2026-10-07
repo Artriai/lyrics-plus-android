@@ -36,7 +36,7 @@ class SuperIslandLyricsService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + job)
 
     private lateinit var lyricsProvider: LyricsProvider
-    private lateinit var superIslandHandler: SuperIslandHandler
+    private var superIslandHandler: SuperIslandHandler? = null
     private val mediaSessionReader by lazy { SpotifyMediaSessionReader(this) }
 
     private var currentTrack: NowPlaying? = null
@@ -66,18 +66,57 @@ class SuperIslandLyricsService : Service() {
         prefs = getSharedPreferences("lyrics_plus_prefs", Context.MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
         lyricsProvider = LyricsProvider.getInstance(this)
-        startForeground(SuperIslandHandler.NOTIFICATION_ID, buildInitialIslandNotification())
+
+        createNotificationChannels()
 
         superIslandHandler = SuperIslandHandler(
             context = this,
             foregroundStarter = { notification, _ ->
-                startForeground(SuperIslandHandler.NOTIFICATION_ID, notification)
+                safeStartForeground(notification)
             }
-        )
-        superIslandHandler.start()
+        ).also { it.start() }
+
+        safeStartForeground(buildInitialIslandNotification())
         observePlaybackUpdates()
         syncCurrentMediaSnapshot()
         startTickLoop()
+    }
+
+    private fun safeStartForeground(notification: Notification) {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                androidx.core.app.ServiceCompat.startForeground(
+                    this,
+                    SuperIslandHandler.NOTIFICATION_ID,
+                    notification,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(SuperIslandHandler.NOTIFICATION_ID, notification)
+            }
+        }.onFailure { error ->
+            android.util.Log.e("SuperIslandService", "safeStartForeground failed: ${error.message}", error)
+            runCatching {
+                startForeground(SuperIslandHandler.NOTIFICATION_ID, notification)
+            }
+        }
+    }
+
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java) ?: return
+            val hyperChannel = NotificationChannel(
+                SuperIslandHandler.CHANNEL_ID,
+                "小米超级岛歌词",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "用于在小米超级岛显示实时歌词"
+                setSound(null, null)
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            manager.createNotificationChannel(hyperChannel)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -99,7 +138,7 @@ class SuperIslandLyricsService : Service() {
         if (::prefs.isInitialized) {
             prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
         }
-        superIslandHandler.stop()
+        superIslandHandler?.stop()
         scope.cancel()
         super.onDestroy()
     }
@@ -271,27 +310,26 @@ class SuperIslandLyricsService : Service() {
         }
 
         collapsedForPausedPlayback = false
-        superIslandHandler.render(
-            SuperIslandState(
-                title = track.track,
-                artist = track.artist,
-                lyric = lyric,
-                fullLyric = activeLine?.text?.cleanSuperIslandLyricText().orEmpty(),
-                leftLyric = timedWindow?.left,
-                rightLyric = timedWindow?.right,
-                progressPercent = progress,
-                isPlaying = playback.isPlaying,
-                accentColor = accent,
-                mediaPackage = track.mediaPackage.ifBlank { SpotifyBroadcasts.PACKAGE_NAME }
-            )
+        val state = SuperIslandState(
+            title = track.track,
+            artist = track.artist,
+            lyric = lyric,
+            fullLyric = activeLine?.text?.cleanSuperIslandLyricText().orEmpty(),
+            leftLyric = timedWindow?.left,
+            rightLyric = timedWindow?.right,
+            progressPercent = progress,
+            isPlaying = playback.isPlaying,
+            accentColor = accent,
+            mediaPackage = track.mediaPackage.ifBlank { SpotifyBroadcasts.PACKAGE_NAME }
         )
+        superIslandHandler?.render(state)
     }
 
     private fun collapseIslandForPause(track: NowPlaying) {
         if (collapsedForPausedPlayback) return
         collapsedForPausedPlayback = true
-        superIslandHandler.prepareForCollapsedState()
-        startForeground(SuperIslandHandler.NOTIFICATION_ID, buildPausedIslandNotification(track))
+        superIslandHandler?.prepareForCollapsedState()
+        safeStartForeground(buildPausedIslandNotification(track))
     }
 
     private data class TimedToken(
@@ -853,7 +891,7 @@ class SuperIslandLyricsService : Service() {
         return NotificationCompat.Builder(this, SuperIslandHandler.CHANNEL_ID)
             .setContentTitle("♪")
             .setContentText("超级岛歌词")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(com.lyricsplus.android.R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -875,7 +913,7 @@ class SuperIslandLyricsService : Service() {
         return NotificationCompat.Builder(this, SuperIslandHandler.CHANNEL_ID)
             .setContentTitle("播放已暂停")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_media_pause)
+            .setSmallIcon(com.lyricsplus.android.R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
