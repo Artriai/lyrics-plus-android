@@ -97,8 +97,8 @@ class LyricsSearchTest {
             LyricsSearch.find<Int>("QQ 音乐", expected, { emptyList() }, { lyrics })
         }
         assertEquals(LyricsSearchFailure.NO_MATCH, error.reason)
-        assertEquals("未找到匹配歌曲", LyricsSearch.failureMessage(error))
-        assertEquals("QQ音乐 (未匹配)", LyricsSearch.failureSource("QQ音乐", error))
+        assertEquals("未找到匹配歌曲", LyricsSearch.failureMessage(error, showDetails = true))
+        assertEquals("QQ音乐 (未匹配)", LyricsSearch.failureSource("QQ音乐", error, showDetails = true))
     }
 
     @Test
@@ -108,8 +108,34 @@ class LyricsSearchTest {
             LyricsSearch.find("QQ 音乐", expected, { listOf(candidate) }, { throw error })
         }
         assertSame(error, actual)
-        assertEquals("QQ音乐 (请求失败)", LyricsSearch.failureSource("QQ音乐", error))
-        assertEquals("歌词服务请求失败，请稍后重试", LyricsSearch.failureMessage(error))
+        assertEquals("QQ音乐 (请求失败)", LyricsSearch.failureSource("QQ音乐", error, showDetails = true))
+        assertEquals("歌词服务请求失败，请稍后重试", LyricsSearch.failureMessage(error, showDetails = true))
+    }
+
+    @Test
+    fun releaseMessagesHideEveryFailureCategory() {
+        val errors = listOf(
+            LyricsSearchException(LyricsSearchFailure.NO_MATCH, "QQ 音乐"),
+            LyricsSearchException(LyricsSearchFailure.NO_SYNCED_LYRICS, "网易云音乐"),
+            IOException("HTTP 503: internal request details"),
+            IllegalArgumentException("invalid encrypted lyrics"),
+            null
+        )
+        for (error in errors) {
+            assertEquals("暂无歌词", LyricsSearch.failureMessage(error, showDetails = false))
+            assertEquals("暂无歌词", LyricsSearch.failureSource(null, error, showDetails = false))
+            for (source in listOf("QQ音乐", "网易云音乐", "LRCLIB")) {
+                assertEquals("$source (暂无歌词)", LyricsSearch.failureSource(source, error, showDetails = false))
+            }
+        }
+    }
+
+    @Test
+    fun debugMessagesStillDistinguishMissingLyricsFromOtherFailures() {
+        val error = LyricsSearchException(LyricsSearchFailure.NO_SYNCED_LYRICS, "QQ 音乐")
+        assertEquals("歌曲暂无同步歌词", LyricsSearch.failureMessage(error, showDetails = true))
+        assertEquals("QQ音乐 (无歌词)", LyricsSearch.failureSource("QQ音乐", error, showDetails = true))
+        assertEquals("歌词加载失败，请稍后重试", LyricsSearch.failureMessage(IllegalStateException(), showDetails = true))
     }
 
     @Test

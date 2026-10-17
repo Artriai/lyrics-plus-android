@@ -1,5 +1,6 @@
 package com.lyricsplus.android.lyrics
 
+import com.lyricsplus.android.BuildConfig
 import com.lyricsplus.android.data.LyricsLine
 import com.lyricsplus.android.data.LyricsSearchResult
 import java.io.IOException
@@ -22,15 +23,23 @@ class LyricsSearchException(val reason: LyricsSearchFailure, source: String) : E
 object LyricsSearch {
     private const val MAX_LYRIC_REQUESTS = 3
 
-    fun failureMessage(error: Throwable?): String = when {
-        error is LyricsSearchException && error.reason == LyricsSearchFailure.NO_MATCH -> "未找到匹配歌曲"
-        error is LyricsSearchException -> "歌曲暂无同步歌词"
-        error is IOException -> "歌词服务请求失败，请稍后重试"
-        else -> "歌词加载失败，请稍后重试"
+    fun failureMessage(error: Throwable?): String = failureMessage(error, BuildConfig.DEBUG)
+
+    internal fun failureMessage(error: Throwable?, showDetails: Boolean): String {
+        if (!showDetails) return "暂无歌词"
+        return when {
+            error is LyricsSearchException && error.reason == LyricsSearchFailure.NO_MATCH -> "未找到匹配歌曲"
+            error is LyricsSearchException -> "歌曲暂无同步歌词"
+            error is IOException -> "歌词服务请求失败，请稍后重试"
+            else -> "歌词加载失败，请稍后重试"
+        }
     }
 
-    fun failureSource(source: String?, error: Throwable?): String {
-        val label = when {
+    fun failureSource(source: String?, error: Throwable?): String =
+        failureSource(source, error, BuildConfig.DEBUG)
+
+    internal fun failureSource(source: String?, error: Throwable?, showDetails: Boolean): String {
+        val label = if (!showDetails) "暂无歌词" else when {
             error is LyricsSearchException && error.reason == LyricsSearchFailure.NO_MATCH -> "未匹配"
             error is LyricsSearchException -> "无歌词"
             else -> "请求失败"
