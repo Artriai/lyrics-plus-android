@@ -34,14 +34,26 @@ internal class InFlightLyricsRequests(
     suspend fun await(
         key: String,
         onUpdate: suspend (CachedLyricsResult) -> Unit,
-        fetch: suspend (publish: suspend (CachedLyricsResult) -> Unit, maySave: () -> Boolean) -> Result<CachedLyricsResult>
+        fetch: suspend (
+            publish: suspend (CachedLyricsResult) -> Unit,
+            commit: suspend (() -> Unit) -> Boolean
+        ) -> Result<CachedLyricsResult>
     ): Result<CachedLyricsResult> {
         val request = mutex.withLock {
             requests[key] ?: Request().also { request ->
                 requests[key] = request
                 scope.launch(start = CoroutineStart.DEFAULT) {
                     val result = try {
-                        fetch({ request.state.value = Snapshot(candidate = it) }, { !request.manualSelection })
+                        fetch({ request.state.value = Snapshot(candidate = it) }) { save ->
+                            // Serialize the check and write with manual selection, avoiding a
+                            // late automatic write between checking the flag and saving SQLite.
+                            mutex.withLock {
+                                if (request.manualSelection) false else {
+                                    save()
+                                    true
+                                }
+                            }
+                        }
                     } catch (error: Exception) {
                         Result.failure(error)
                     }
@@ -55,7 +67,7 @@ internal class InFlightLyricsRequests(
         var delivered: CachedLyricsResult? = null
         val final = request.state.first { snapshot ->
             snapshot.candidate?.let { candidate ->
-                if (candidate !== delivered) {
+                if (candidate != delivered) {
                     delivered = candidate
                     onUpdate(candidate)
                 }

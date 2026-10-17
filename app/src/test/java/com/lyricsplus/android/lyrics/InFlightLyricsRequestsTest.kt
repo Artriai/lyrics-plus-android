@@ -51,12 +51,12 @@ class InFlightLyricsRequestsTest {
             val finish = CompletableDeferred<Unit>()
             var maySaveAfterSwitch = true
             val request = async {
-                pool.await("song", {}) { publish, maySave ->
-                    assertTrue(maySave())
+                pool.await("song", {}) { publish, commit ->
+                    assertTrue(commit {})
                     started.complete(Unit)
                     finish.await()
                     publish(better)
-                    maySaveAfterSwitch = maySave()
+                    maySaveAfterSwitch = commit { error("Manual selection must prohibit an automatic write") }
                     Result.success(better)
                 }
             }

@@ -83,6 +83,6 @@ object LyricsMatching {
         return (points.toDouble() / available * MAX_MATCH_SCORE).roundToInt()
     }
 
-    fun selectionScore(matchScore: Int, lyrics: List<LyricsLine>): Int =
-        matchScore + if (lyrics.any { syllableTiming.containsMatchIn(it.text) }) SYLLABLE_BONUS else 0
+    fun selectionScore(matchScore: Int?, lyrics: List<LyricsLine>): Int =
+        (matchScore ?: 0) + if (lyrics.any { syllableTiming.containsMatchIn(it.text) }) SYLLABLE_BONUS else 0
 }

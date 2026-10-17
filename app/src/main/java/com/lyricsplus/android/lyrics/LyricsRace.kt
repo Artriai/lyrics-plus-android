@@ -9,7 +9,7 @@ import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.SocketTimeoutException
 
-/** One short collection window, followed by strictly better late results. */
+/** Uncached: a short window then upgrades. Cached: collect everything before one upgrade. */
 internal class LyricsRace(
     private val awaitWindow: suspend () -> Unit = { delay(300L) },
     private val awaitDeadline: suspend () -> Unit = { delay(20_000L) }
@@ -23,19 +23,38 @@ internal class LyricsRace(
     suspend fun run(
         primary: List<suspend () -> Result<CachedLyricsResult>>,
         fallback: suspend () -> Result<CachedLyricsResult>,
-        onUpdate: suspend (CachedLyricsResult) -> Unit
+        onUpdate: suspend (CachedLyricsResult) -> Unit,
+        cached: CachedLyricsResult? = null
     ): Result<CachedLyricsResult> = coroutineScope {
         require(primary.isNotEmpty())
         val events = Channel<Event>(Channel.UNLIMITED)
         val jobs = mutableListOf<Job>()
         val failures = mutableListOf<Throwable>()
+        val refreshed = mutableListOf<CachedLyricsResult>()
         var remaining = primary.size
-        var best: CachedLyricsResult? = null
-        var publishedScore: Int? = null
+        var best: CachedLyricsResult? = cached
+        var publishedScore: Int? = cached?.let { LyricsMatching.selectionScore(it.score, it.lyrics) }
         var windowStarted = false
         var fallbackStarted = false
 
         fun CachedLyricsResult.totalScore() = LyricsMatching.selectionScore(score, lyrics)
+
+        fun finishLegacyValidation() {
+            val previous = cached?.takeIf { it.score == null } ?: return
+            val timingFloor = LyricsMatching.selectionScore(0, previous.lyrics)
+            val verified = refreshed.filter {
+                it.score != null && LyricsMatching.selectionScore(0, it.lyrics) >= timingFloor
+            }
+            // Until its source is revalidated, an unscored primary cache can only
+            // receive a definite line -> word upgrade. Do not guess its old match score.
+            val baseline = verified.firstOrNull { it.source == previous.source }
+            val eligible = if (baseline != null || previous.source !in listOf("网易云音乐", "QQ音乐")) {
+                verified
+            } else verified.filter { LyricsMatching.selectionScore(0, it.lyrics) > timingFloor }
+            best = eligible.fold(baseline ?: previous) { winner, candidate ->
+                if (candidate.totalScore() > winner.totalScore()) candidate else winner
+            }
+        }
 
         suspend fun publish() {
             val candidate = best ?: return
@@ -55,6 +74,8 @@ internal class LyricsRace(
                 ?: LyricsSearchException(LyricsSearchFailure.NO_MATCH, "歌词服务")
         )
 
+        // A cache hit is useful immediately; never expose intermediate refresh winners.
+        if (cached != null) onUpdate(cached)
         primary.forEach { request ->
             jobs += launch { events.send(Event.Completed(requestResult(request))) }
         }
@@ -71,12 +92,13 @@ internal class LyricsRace(
                         if (!event.fallback) remaining--
                         event.result.fold(
                             onSuccess = { candidate ->
+                                if (cached != null && cached.score == null) refreshed.add(candidate)
                                 if (best == null || candidate.totalScore() > best!!.totalScore()) best = candidate
                             },
                             onFailure = { failures.add(it) }
                         )
                         val candidate = best
-                        if (candidate != null) {
+                        if (candidate != null && cached == null) {
                             if (publishedScore != null || remaining == 0 ||
                                 candidate.totalScore() >= LyricsMatching.MAX_MATCH_SCORE + LyricsMatching.SYLLABLE_BONUS) {
                                 publish()
@@ -91,7 +113,9 @@ internal class LyricsRace(
                         }
                         if (remaining == 0) {
                             if (candidate != null) {
-                                outcome = Result.success(candidate)
+                                finishLegacyValidation()
+                                publish()
+                                outcome = Result.success(best!!)
                             } else if (event.fallback) {
                                 outcome = failure()
                             } else if (!fallbackStarted) {
@@ -104,6 +128,7 @@ internal class LyricsRace(
                     Event.WindowElapsed -> publish()
                     Event.Deadline -> {
                         // Keep any useful lyrics when the remaining source is too slow.
+                        finishLegacyValidation()
                         publish()
                         outcome = best?.let { Result.success(it) }
                             ?: Result.failure(SocketTimeoutException("歌词搜索超过 20 秒"))
