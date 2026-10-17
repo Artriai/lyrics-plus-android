@@ -26,13 +26,18 @@ object LyricsMatching {
     private val trailingRemaster = Regex(
         """\s+[-–—]\s*$REMASTER\s*$""", RegexOption.IGNORE_CASE
     )
+    private val featuredCredit = Regex(
+        """\s*[\[(（]\s*(?:feat\.?|ft\.?)\s+[^\])）]*[\])）]\s*|\s+(?:feat\.?|ft\.?)\s+.+$""",
+        RegexOption.IGNORE_CASE
+    )
     private val syllableTiming = Regex("""<\d{2}:\d{2}[.:]\d{1,3}>|\(\d+,\d+(?:,\d+)?\)""")
 
     fun searchTitles(title: String): List<String> =
         listOf(title.trim(), baseTitle(title)).filter { it.isNotBlank() }.distinct()
 
     private fun baseTitle(title: String): String =
-        title.replace(bracketedRemaster, " ").replace(trailingRemaster, "").trim()
+        title.replace(featuredCredit, " ")
+            .replace(bracketedRemaster, " ").replace(trailingRemaster, "").trim()
 
     private fun normalized(value: String): String =
         Normalizer.normalize(value, Normalizer.Form.NFKC)

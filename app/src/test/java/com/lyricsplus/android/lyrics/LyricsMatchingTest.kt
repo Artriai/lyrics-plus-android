@@ -39,6 +39,14 @@ class LyricsMatchingTest {
     }
 
     @Test
+    fun featuringCreditsHaveACommonFallbackWithoutRemovingOrdinarySubtitles() {
+        assertEquals(listOf("Song (feat. Guest)", "Song"), LyricsMatching.searchTitles("Song (feat. Guest)"))
+        assertEquals(listOf("Song feat. Guest", "Song"), LyricsMatching.searchTitles("Song feat. Guest"))
+        assertEquals(listOf("With You"), LyricsMatching.searchTitles("With You"))
+        assertEquals(listOf("Song - Subtitle"), LyricsMatching.searchTitles("Song - Subtitle"))
+    }
+
+    @Test
     fun artistOrAlbumAloneCannotRescueAnUnrelatedSong() {
         assertNull(LyricsMatching.score(expected, expected.copy(title = "Desperado")))
         assertNull(LyricsMatching.score(expected, expected.copy(artist = "Another Artist")))
