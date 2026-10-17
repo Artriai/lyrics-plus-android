@@ -35,7 +35,8 @@ class LyricsCacheDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE
             db.execSQL(CREATE_SOURCE_TABLE)
             db.execSQL(
                 "INSERT INTO $TABLE_SOURCES ($COLUMN_KEY, $COLUMN_CONTENT, $COLUMN_SOURCE, $COLUMN_CACHED_AT, $COLUMN_SCORE) " +
-                    "SELECT $COLUMN_KEY, $COLUMN_CONTENT, $COLUMN_SOURCE, $COLUMN_CACHED_AT, $COLUMN_SCORE FROM $TABLE_LYRICS"
+                    "SELECT $COLUMN_KEY, $COLUMN_CONTENT, COALESCE($COLUMN_SOURCE, '本地缓存'), $COLUMN_CACHED_AT, $COLUMN_SCORE " +
+                    "FROM $TABLE_LYRICS WHERE $COLUMN_KEY IS NOT NULL"
             )
         }
     }
