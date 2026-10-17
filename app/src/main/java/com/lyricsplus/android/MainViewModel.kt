@@ -291,6 +291,7 @@ class MainViewModel(
             }
         }
 
+        val session = lyricsProvider.beginPlayback(track)
         lyricsFetchJob = viewModelScope.launch {
             val isCached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 lyricsProvider.isCached(track)
@@ -301,7 +302,7 @@ class MainViewModel(
 
             val result = lyricsProvider.findSyncedLyrics(track, targetSource, onUpdate = { candidate ->
                 applyCandidate(candidate)
-            })
+            }, session = session)
             if (!isActive || !lyricsGeneration.isCurrent(generation) || lyricsRequestKey != requestKey ||
                 _uiState.value.nowPlaying.requestKey() != requestKey) return@launch
 
@@ -412,10 +413,11 @@ class MainViewModel(
             // Cancel any ongoing fetch job
             lyricsFetchJob?.cancel()
 
-            // Launch the new managed fetch job
+            // Capture the playback identity before launching asynchronous work.
+            val session = lyricsProvider.beginPlayback(nowPlaying)
             lyricsFetchJob = viewModelScope.launch {
                 // Fetch using only the nextSource
-                val result = lyricsProvider.findSyncedLyrics(nowPlaying, nextSource)
+                val result = lyricsProvider.findSyncedLyrics(nowPlaying, nextSource, session = session)
                 if (!isActive || !lyricsGeneration.isCurrent(generation) ||
                     _uiState.value.nowPlaying.requestKey() != requestKey) return@launch
 

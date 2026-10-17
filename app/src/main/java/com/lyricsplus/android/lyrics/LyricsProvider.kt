@@ -7,6 +7,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 
 class LyricsProvider(
@@ -31,6 +34,10 @@ class LyricsProvider(
         japaneseReader.preWarm()
     }
 
+    fun beginPlayback(track: NowPlaying): LyricsPlaybackSession = automaticRequests.begin(
+        listOf(track.mediaPackage, track.track, track.artist, track.album).joinToString("|")
+    )
+
     fun clearCache(track: NowPlaying) {
         val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
         cacheDb.deleteLyrics(trackKey)
@@ -41,20 +48,24 @@ class LyricsProvider(
     suspend fun findSyncedLyrics(
         track: NowPlaying,
         preferredSource: String? = null,
-        onUpdate: suspend (CachedLyricsResult) -> Unit = {}
+        onUpdate: suspend (CachedLyricsResult) -> Unit = {},
+        session: LyricsPlaybackSession = beginPlayback(track)
     ): Result<CachedLyricsResult> {
         val callerContext = currentCoroutineContext()
         return withContext(Dispatchers.IO) {
             runCatching {
                 val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
+                automaticRequests.requireCurrent(session)
                 if (preferredSource != null) {
-                    automaticRequests.markManualSelection(trackKey)
+                    automaticRequests.markManualSelection(session)
                     // A manual selection fills only its own source cache, never the automatic winner.
-                    return@runCatching findSyncedLyricsForSource(track, preferredSource).getOrThrow()
+                    return@runCatching (withTimeoutOrNull(LyricsRace.REQUEST_TIMEOUT_MS) {
+                        findSyncedLyricsForSource(track, preferredSource)
+                    } ?: Result.failure(SocketTimeoutException("歌词搜索超过 8 秒"))).getOrThrow()
                 }
 
                 automaticRequests.await(
-                    key = trackKey,
+                    session = session,
                     onUpdate = { candidate -> withContext(callerContext) { onUpdate(candidate) } }
                 ) { publish, commit ->
                     LyricsCacheResolver().resolve(
@@ -65,7 +76,7 @@ class LyricsProvider(
                         prepare = ::addReadings
                     )
                 }.getOrThrow()
-            }
+            }.onFailure { if (it is CancellationException) throw it }
         }
     }
 
@@ -80,7 +91,7 @@ class LyricsProvider(
             
             if (!refresh) {
                 val cached = inMemoryCache[memKey] ?: cacheDb.getSourceLyrics(trackKey, sourceName)
-                if (cached != null && LyricsCachePolicy.canReuseSource(cached, System.currentTimeMillis())) {
+                if (cached != null && cached.result.score != null) {
                     inMemoryCache[memKey] = cached
                     return@runCatching cached.result
                 }
@@ -149,7 +160,7 @@ class LyricsProvider(
     fun isCachedForSource(track: NowPlaying, sourceName: String): Boolean {
         val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
         return inMemoryCache["$trackKey|$sourceName"]?.let {
-            LyricsCachePolicy.canReuseSource(it, System.currentTimeMillis())
+            it.result.score != null
         } == true
     }
 

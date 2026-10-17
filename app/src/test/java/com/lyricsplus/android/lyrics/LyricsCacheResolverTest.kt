@@ -83,7 +83,6 @@ class LyricsCacheResolverTest {
         assertEquals(setOf("网易云音乐" to true, "QQ音乐" to true), h.calls.toSet())
         assertEquals(0, h.windows)
         assertEquals(qq, h.saved.single().result)
-        assertTrue(h.saved.single().checkSucceeded)
     }
 
     @Test fun evenMaximumScoreWaitsForCollectionOnCacheHits() = scenario {
@@ -108,7 +107,6 @@ class LyricsCacheResolverTest {
         assertEquals(cached.result, h.result.await().getOrThrow())
         assertEquals(listOf(cached.result), h.received)
         assertEquals(cached.cachedAt, h.saved.single().cachedAt)
-        assertEquals(now, h.saved.single().checkedAt)
     }
 
     @Test fun deadlineUpgradesOnceAndCancelsSlowSourceWithoutAcceptingLateResult() = scenario {
@@ -122,23 +120,19 @@ class LyricsCacheResolverTest {
         assertEquals(netease, h.result.await().getOrThrow())
         assertEquals(listOf(cached.result, netease), h.received)
         assertTrue("QQ音乐" in h.cancelled)
-        assertFalse(h.saved.single().checkSucceeded)
         h.second.complete(Result.success(candidate("QQ音乐", 85, words = true)))
         repeat(5) { yield() }
         assertEquals(listOf(cached.result, netease), h.received)
     }
 
-    @Test fun failedRefreshPreservesCacheAndUsesShortRetryInterval() = scenario {
+    @Test fun failedRefreshPreservesCacheWithoutSchedulingRetries() = scenario {
         val cached = LyricsCacheEntry(candidate("网易云音乐", 90), now - 1000)
         val h = Harness(this, cached)
         h.first.complete(Result.failure(IOException("offline")))
         h.second.complete(Result.failure(IOException("timeout")))
         assertEquals(cached.result, h.result.await().getOrThrow())
         assertEquals(listOf(cached.result), h.received)
-        val saved = h.saved.single()
-        assertFalse(saved.checkSucceeded)
-        assertFalse(LyricsCachePolicy.shouldRefresh(saved, now + LyricsCachePolicy.RETRY_INTERVAL_MS - 1))
-        assertTrue(LyricsCachePolicy.shouldRefresh(saved, now + LyricsCachePolicy.RETRY_INTERVAL_MS))
+        assertEquals(cached.result, h.saved.single().result)
     }
 
     @Test fun realEmptySearchesCompleteTheCheckWithoutDeletingUsefulLyrics() = scenario {
@@ -147,17 +141,16 @@ class LyricsCacheResolverTest {
         h.first.complete(Result.failure(LyricsSearchException(LyricsSearchFailure.NO_MATCH, "网易云音乐")))
         h.second.complete(Result.failure(LyricsSearchException(LyricsSearchFailure.NO_SYNCED_LYRICS, "QQ音乐")))
         assertEquals(cached.result, h.result.await().getOrThrow())
-        assertTrue(h.saved.single().checkSucceeded)
-        assertFalse(LyricsCachePolicy.shouldRefresh(h.saved.single(), now + LyricsCachePolicy.RETRY_INTERVAL_MS))
     }
 
-    @Test fun freshCacheDoesNotRequestAnyProviderOrResetRefreshAge() = scenario {
-        val cached = LyricsCacheEntry(candidate("QQ音乐", 85, words = true), now - 1000, now - 1000, true)
+    @Test fun cacheIsCheckedOnEveryNewPlaybackWithoutAnAgeThreshold() = scenario {
+        val cached = LyricsCacheEntry(candidate("QQ音乐", 85, words = true), now)
         val h = Harness(this, cached)
+        h.first.complete(Result.failure(IOException()))
+        h.second.complete(Result.success(cached.result))
         assertEquals(cached.result, h.result.await().getOrThrow())
         assertEquals(listOf(cached.result), h.received)
-        assertTrue(h.calls.isEmpty())
-        assertTrue(h.saved.isEmpty())
+        assertEquals(setOf("网易云音乐" to true, "QQ音乐" to true), h.calls.toSet())
     }
 
     @Test fun oldUnknownScoreIsRevalidatedWithoutInventingFullMarks() = scenario {
@@ -212,15 +205,15 @@ class LyricsCacheResolverTest {
         assertEquals(listOf(cached.result, qq), h.received)
     }
 
-    @Test fun readingEnrichmentKeepsScoreAndDoesNotPostponeRefresh() = scenario {
-        val cached = LyricsCacheEntry(candidate("QQ音乐", 85, words = true), now - 1000, now - 1000, true)
+    @Test fun readingEnrichmentKeepsMatchScoreAndContentAge() = scenario {
+        val cached = LyricsCacheEntry(candidate("QQ音乐", 85, words = true), now - 1000)
         val h = Harness(this, cached) { lines -> lines.map { it.copy(reading = "new reading") } }
+        h.first.complete(Result.failure(IOException()))
+        h.second.complete(Result.failure(IOException()))
         val enriched = h.result.await().getOrThrow()
         assertEquals("new reading", enriched.lyrics.single().reading)
         assertEquals(85, enriched.score)
-        assertEquals(cached.checkedAt, h.saved.single().checkedAt)
         assertEquals(cached.cachedAt, h.saved.single().cachedAt)
-        assertTrue(h.calls.isEmpty())
     }
 
     @Test fun manualSelectionDuringSharedRefreshBlocksAutomaticSaveButStillWarmsSources() = scenario {
@@ -253,10 +246,48 @@ class LyricsCacheResolverTest {
         assertEquals(cached, automatic)
         assertEquals(setOf("网易云音乐", "QQ音乐"), sources.keys)
         // A later automatic session is not permanently locked by the previous manual action.
+        pool.begin("another song")
         assertEquals(qq, pool.await("song", {}) { _, commit ->
             assertTrue(commit { automatic = LyricsCacheEntry(qq, now) })
             Result.success(qq)
         }.getOrThrow())
         assertEquals(qq, automatic.result)
     }
+    @Test fun switchCancelsRaceButSavesAlreadyObtainedLyricsForTheOldSongOnly() = scenario {
+        for (cached in listOf(null, LyricsCacheEntry(candidate("网易云音乐", 70), now - 1000))) {
+            val pool = InFlightLyricsRequests(this)
+            val cache = mutableMapOf<String, LyricsCacheEntry>()
+            val firstDone = CompletableDeferred<Unit>()
+            val slowCancelled = CompletableDeferred<Unit>()
+            val updates = mutableListOf<CachedLyricsResult>()
+            val netease = candidate("网易云音乐", 95)
+            val old = async {
+                pool.await("A", { updates.add(it) }) { publish, commit ->
+                    LyricsCacheResolver(LyricsRace(awaitWindow = { awaitCancellation() }), { now }).resolve(
+                        cached,
+                        request = { source, refresh ->
+                            assertTrue(refresh)
+                            if (source == "网易云音乐") {
+                                firstDone.complete(Unit)
+                                Result.success(netease)
+                            } else {
+                                try { awaitCancellation() } finally { slowCancelled.complete(Unit) }
+                            }
+                        },
+                        onUpdate = publish,
+                        save = { entry -> commit { cache["A"] = entry } }
+                    )
+                }
+            }
+            firstDone.await()
+            repeat(5) { yield() } // Consume the result event, leaving QQ and the display window pending.
+            pool.begin("B")
+            assertTrue(runCatching { old.await() }.exceptionOrNull() is CancellationException)
+            slowCancelled.await()
+            assertEquals(netease, cache["A"]?.result)
+            assertNull(cache["B"])
+            assertEquals(listOfNotNull(cached?.result), updates)
+        }
+    }
+
 }

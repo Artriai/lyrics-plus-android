@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 
 class LyricsNotificationListenerService : NotificationListenerService() {
     private val serviceScope = kotlinx.coroutines.CoroutineScope(
@@ -44,13 +46,24 @@ class LyricsNotificationListenerService : NotificationListenerService() {
         }
     }
 
+    private var prefetchKey: String? = null
+    private var prefetchJob: Job? = null
+
     private fun triggerBackgroundPrefetch(track: NowPlaying) {
-        serviceScope.launch {
-            runCatching {
-                val provider = LyricsProvider.getInstance(applicationContext)
-                provider.findSyncedLyrics(track)
-            }
+        val key = listOf(track.mediaPackage, track.track, track.artist, track.album).joinToString("|")
+        if (prefetchKey == key) return
+        prefetchKey = key
+        prefetchJob?.cancel()
+        val provider = LyricsProvider.getInstance(applicationContext)
+        val session = provider.beginPlayback(track)
+        prefetchJob = serviceScope.launch {
+            provider.findSyncedLyrics(track, session = session)
         }
+    }
+
+    override fun onDestroy() {
+        serviceScope.cancel()
+        super.onDestroy()
     }
 
     private fun refreshFromActiveNotifications() {
@@ -68,6 +81,11 @@ class LyricsNotificationListenerService : NotificationListenerService() {
                 }
             }
             ?.toSpotifySnapshot()
+        latestSnapshot?.nowPlaying?.takeIf { it.hasTrack }?.let(::triggerBackgroundPrefetch)
+        if (latestSnapshot == null) {
+            prefetchJob?.cancel()
+            prefetchKey = null
+        }
     }
 
     private fun acceptsMediaNotification(sbn: StatusBarNotification): Boolean {

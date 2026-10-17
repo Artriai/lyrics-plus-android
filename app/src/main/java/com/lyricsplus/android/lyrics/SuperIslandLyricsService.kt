@@ -201,6 +201,7 @@ class SuperIslandLyricsService : Service() {
         val key = track.stableIslandRequestKey()
         val source = preferredLyricsSource()
         requestedLyricsSource = source
+        val session = lyricsProvider.beginPlayback(track)
         lyricsFetchJob = scope.launch {
             fun isCurrent() = isActive && lyricsGeneration.isCurrent(generation) && trackRequestKey == key
             val result = lyricsProvider.findSyncedLyrics(track, source, onUpdate = { candidate ->
@@ -208,7 +209,7 @@ class SuperIslandLyricsService : Service() {
                     currentLyrics = candidate.lyrics
                     renderCurrentState()
                 }
-            })
+            }, session = session)
             if (!isCurrent()) return@launch
             result.fold(
                 onSuccess = { currentLyrics = it.lyrics },

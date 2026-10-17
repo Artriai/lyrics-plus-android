@@ -373,11 +373,12 @@ class FloatingLyricsService : Service() {
         lyricsFetchJob?.cancel()
         val generation = lyricsGeneration.next()
         val key = track.stableFloatingRequestKey()
+        val session = lyricsProvider.beginPlayback(track)
         lyricsFetchJob = serviceScope.launch {
             fun isCurrent() = isActive && lyricsGeneration.isCurrent(generation) && trackRequestKey == key
             val result = lyricsProvider.findSyncedLyrics(track, onUpdate = { candidate ->
                 if (isCurrent()) currentLyrics = candidate.lyrics
-            })
+            }, session = session)
             if (!isCurrent()) return@launch
             result.fold(
                 onSuccess = { currentLyrics = it.lyrics },

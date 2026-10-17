@@ -78,4 +78,9 @@ class LyricsMatchingTest {
         val neteaseScore = LyricsMatching.selectionScore(100, listOf(LyricsLine(1000, "test")))
         assertTrue(qqScore > neteaseScore)
     }
+    @Test fun unknownCacheScoreIsNotInventedAndWordBonusIsStillPreserved() {
+        assertEquals(0, LyricsMatching.selectionScore(null, listOf(LyricsLine(1000, "plain"))))
+        assertEquals(100, LyricsMatching.selectionScore(null, listOf(LyricsLine(1000, "hello(1000,500)"))))
+    }
+
 }

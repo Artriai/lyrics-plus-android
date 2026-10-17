@@ -47,9 +47,7 @@ class LyricsCacheDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE
 
     private fun readEntry(trackKey: String, source: String? = null): LyricsCacheEntry? {
         val table = if (source == null) TABLE_LYRICS else TABLE_SOURCES
-        val columns = if (source == null) {
-            arrayOf(COLUMN_CONTENT, COLUMN_SOURCE, COLUMN_SCORE, COLUMN_CACHED_AT, COLUMN_CHECKED_AT, COLUMN_CHECK_SUCCEEDED)
-        } else arrayOf(COLUMN_CONTENT, COLUMN_SOURCE, COLUMN_SCORE, COLUMN_CACHED_AT)
+        val columns = arrayOf(COLUMN_CONTENT, COLUMN_SOURCE, COLUMN_SCORE, COLUMN_CACHED_AT)
         return readableDatabase.query(
             table, columns,
             if (source == null) "$COLUMN_KEY = ?" else "$COLUMN_KEY = ? AND $COLUMN_SOURCE = ?",
@@ -64,18 +62,13 @@ class LyricsCacheDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE
             val score = if (cursor.isNull(2)) null else cursor.getInt(2).takeIf { it in 0..100 }
             LyricsCacheEntry(
                 CachedLyricsResult(lyrics, savedSource, score),
-                cachedAt = cursor.getLong(3),
-                checkedAt = if (source == null) cursor.getLong(4) else 0L,
-                checkSucceeded = source == null && cursor.getInt(5) != 0
+                cachedAt = cursor.getLong(3)
             )
         }
     }
 
     internal fun saveLyrics(trackKey: String, entry: LyricsCacheEntry) {
-        val values = contentValues(trackKey, entry).apply {
-            put(COLUMN_CHECKED_AT, entry.checkedAt)
-            put(COLUMN_CHECK_SUCCEEDED, if (entry.checkSucceeded) 1 else 0)
-        }
+        val values = contentValues(trackKey, entry)
         writableDatabase.insertWithOnConflict(TABLE_LYRICS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 

@@ -2,6 +2,8 @@ package com.lyricsplus.android.lyrics
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -12,7 +14,7 @@ import java.net.SocketTimeoutException
 /** Uncached: a short window then upgrades. Cached: collect everything before one upgrade. */
 internal class LyricsRace(
     private val awaitWindow: suspend () -> Unit = { delay(300L) },
-    private val awaitDeadline: suspend () -> Unit = { delay(20_000L) }
+    private val awaitDeadline: suspend () -> Unit = { delay(REQUEST_TIMEOUT_MS) }
 ) {
     private sealed interface Event {
         data class Completed(val result: Result<CachedLyricsResult>, val fallback: Boolean = false) : Event
@@ -24,7 +26,8 @@ internal class LyricsRace(
         primary: List<suspend () -> Result<CachedLyricsResult>>,
         fallback: suspend () -> Result<CachedLyricsResult>,
         onUpdate: suspend (CachedLyricsResult) -> Unit,
-        cached: CachedLyricsResult? = null
+        cached: CachedLyricsResult? = null,
+        onInterrupted: suspend (CachedLyricsResult) -> Unit = {}
     ): Result<CachedLyricsResult> = coroutineScope {
         require(primary.isNotEmpty())
         val events = Channel<Event>(Channel.UNLIMITED)
@@ -131,15 +134,25 @@ internal class LyricsRace(
                         finishLegacyValidation()
                         publish()
                         outcome = best?.let { Result.success(it) }
-                            ?: Result.failure(SocketTimeoutException("歌词搜索超过 20 秒"))
+                            ?: Result.failure(SocketTimeoutException("歌词搜索超过 8 秒"))
                     }
                 }
             }
             outcome
+        } catch (error: CancellationException) {
+            // A track switch stops work, but useful results already obtained belong in
+            // that track's cache. Do not publish an upgrade to the departing screen.
+            finishLegacyValidation()
+            best?.let { withContext(NonCancellable) { onInterrupted(it) } }
+            throw error
         } finally {
             jobs.forEach { it.cancel() }
             events.close()
         }
+    }
+
+    companion object {
+        const val REQUEST_TIMEOUT_MS = 8_000L
     }
 
     private suspend fun requestResult(request: suspend () -> Result<CachedLyricsResult>): Result<CachedLyricsResult> {

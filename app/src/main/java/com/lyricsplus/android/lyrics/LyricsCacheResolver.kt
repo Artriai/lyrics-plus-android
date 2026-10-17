@@ -1,7 +1,6 @@
 package com.lyricsplus.android.lyrics
 
 import com.lyricsplus.android.data.LyricsLine
-import java.util.concurrent.ConcurrentHashMap
 
 /** Cache hits stay visible while a single, shared refresh collects the primary sources. */
 internal class LyricsCacheResolver(
@@ -18,38 +17,20 @@ internal class LyricsCacheResolver(
         // Display before Japanese reading generation or any network work.
         cached?.let { onUpdate(it.result) }
         val prepared = cached?.copy(result = cached.result.copy(lyrics = prepare(cached.result.lyrics)))
-        if (prepared != null && !LyricsCachePolicy.shouldRefresh(prepared, now())) {
-            if (prepared != cached) {
-                save(prepared)
-                onUpdate(prepared.result)
-            }
-            return Result.success(prepared.result)
-        }
-
-        val checked = ConcurrentHashMap<String, Boolean>()
-        suspend fun check(source: String): Result<CachedLyricsResult> {
-            val result = request(source, cached != null)
-            val error = result.exceptionOrNull()
-            // A genuine empty search is a completed check; transport failures need a retry.
-            checked[source] = error == null || error is LyricsSearchException
-            return result
+        suspend fun persist(resolved: CachedLyricsResult) {
+            save(LyricsCacheEntry(
+                result = resolved,
+                cachedAt = if (resolved == prepared?.result) prepared.cachedAt else now()
+            ))
         }
         val result = race.run(
-            primary = listOf({ check("网易云音乐") }, { check("QQ音乐") }),
-            fallback = { request("LRCLIB", false) },
+            primary = listOf({ request("网易云音乐", true) }, { request("QQ音乐", true) }),
+            fallback = { request("LRCLIB", true) },
             onUpdate = { candidate -> if (candidate != cached?.result) onUpdate(candidate) },
-            cached = prepared?.result
+            cached = prepared?.result,
+            onInterrupted = ::persist
         )
-        result.getOrNull()?.let { resolved ->
-            val checkedAt = now()
-            val entry = LyricsCacheEntry(
-                result = resolved,
-                cachedAt = if (resolved == prepared?.result) prepared.cachedAt else checkedAt,
-                checkedAt = checkedAt,
-                checkSucceeded = checked.size == 2 && checked.values.all { it }
-            )
-            save(entry)
-        }
+        result.getOrNull()?.let { persist(it) }
         return result
     }
 }
