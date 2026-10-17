@@ -92,8 +92,56 @@ class QQMusicClient {
     }
 
     private fun searchSongs(query: LyricsSearchQuery): List<LyricsCandidate<String>> {
-        // Smartbox is still the available search endpoint. The shared search
-        // planner retries remaster-free titles and then title-only keywords.
+        // Full search supplies album/duration and handles version suffixes.
+        // The suggestion endpoint remains a fallback if full search is unavailable.
+        val fullSearch = runCatching { searchFullSongs(query) }
+        fullSearch.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        val suggestions = runCatching { searchSuggestions(query) }
+        suggestions.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        fullSearch.exceptionOrNull()?.let { throw it }
+        suggestions.exceptionOrNull()?.let { throw it }
+        return emptyList()
+    }
+
+    private fun searchFullSongs(query: LyricsSearchQuery): List<LyricsCandidate<String>> {
+        // Do not send new_json=1: it silently empties song.list even when code=0.
+        val url = QQ_MUSIC_FULL_SEARCH_API.toHttpUrl().newBuilder()
+            .addQueryParameter("w", "${query.title} ${query.artist}".trim())
+            .addQueryParameter("n", "10")
+            .addQueryParameter("p", "1")
+            .addQueryParameter("format", "json")
+            .addQueryParameter("ct", "24")
+            .addQueryParameter("qqmusic_ver", "1298")
+            .addQueryParameter("g_tk", "5381")
+            .addQueryParameter("t", "0")
+            .addQueryParameter("platform", "yqq.json")
+            .addQueryParameter("inCharset", "utf8")
+            .addQueryParameter("outCharset", "utf-8")
+            .addQueryParameter("remoteplace", "txt.yqq.song")
+            .build()
+        val response = requestGet(url.toString())
+        if (response.code !in 200..299) throw java.io.IOException("QQ 音乐 HTTP ${response.code}")
+        val json = JSONObject(response.body)
+        if (json.optInt("code", -1) != 0) throw java.io.IOException("QQ 音乐完整搜索服务请求失败")
+        val songs = json.optJSONObject("data")?.optJSONObject("song")?.optJSONArray("list")
+            ?: return emptyList()
+        return (0 until songs.length()).mapNotNull { index ->
+            val song = songs.getJSONObject(index)
+            val mid = song.optString("songmid")
+            if (mid.isBlank()) return@mapNotNull null
+            val singers = song.optJSONArray("singer")
+            val artist = if (singers == null) "" else (0 until singers.length())
+                .joinToString(" ") { singers.getJSONObject(it).optString("name") }
+            LyricsCandidate(mid, SongMetadata(
+                title = QqMusicSearchMetadata.title(song.optString("songname")),
+                artist = artist,
+                album = song.optString("albumname"),
+                durationSeconds = song.optDouble("interval", 0.0)
+            ), mid)
+        }
+    }
+
+    private fun searchSuggestions(query: LyricsSearchQuery): List<LyricsCandidate<String>> {
         val url = QQ_MUSIC_SEARCH_API.toHttpUrl().newBuilder()
             .addQueryParameter("key", "${query.title} ${query.artist}".trim())
             .addQueryParameter("format", "json")
@@ -221,6 +269,7 @@ class QQMusicClient {
 
     private companion object {
         const val MUSIC_U_API = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+        const val QQ_MUSIC_FULL_SEARCH_API = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
         const val QQ_MUSIC_SEARCH_API = "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg"
         const val QQ_MUSIC_CLIENT_TYPE = 11
         const val QQ_MUSIC_CLIENT_VERSION = 14090008
