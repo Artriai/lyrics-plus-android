@@ -122,10 +122,10 @@ class LyricsSearchTest {
             null
         )
         for (error in errors) {
-            assertEquals("暂无歌词", LyricsSearch.failureMessage(error, showDetails = false))
-            assertEquals("暂无歌词", LyricsSearch.failureSource(null, error, showDetails = false))
+            assertEquals("纯音乐 / 无歌词", LyricsSearch.failureMessage(error, showDetails = false))
+            assertEquals("未找到", LyricsSearch.failureSource(null, error, showDetails = false))
             for (source in listOf("QQ音乐", "网易云音乐", "LRCLIB")) {
-                assertEquals("$source (暂无歌词)", LyricsSearch.failureSource(source, error, showDetails = false))
+                assertEquals("$source (无歌词)", LyricsSearch.failureSource(source, error, showDetails = false))
             }
         }
     }

@@ -26,7 +26,7 @@ object LyricsSearch {
     fun failureMessage(error: Throwable?): String = failureMessage(error, BuildConfig.DEBUG)
 
     internal fun failureMessage(error: Throwable?, showDetails: Boolean): String {
-        if (!showDetails) return "暂无歌词"
+        if (!showDetails) return "纯音乐 / 无歌词"
         return when {
             error is LyricsSearchException && error.reason == LyricsSearchFailure.NO_MATCH -> "未找到匹配歌曲"
             error is LyricsSearchException -> "歌曲暂无同步歌词"
@@ -39,7 +39,8 @@ object LyricsSearch {
         failureSource(source, error, BuildConfig.DEBUG)
 
     internal fun failureSource(source: String?, error: Throwable?, showDetails: Boolean): String {
-        val label = if (!showDetails) "暂无歌词" else when {
+        if (!showDetails) return if (source == null) "未找到" else "$source (无歌词)"
+        val label = when {
             error is LyricsSearchException && error.reason == LyricsSearchFailure.NO_MATCH -> "未匹配"
             error is LyricsSearchException -> "无歌词"
             else -> "请求失败"
