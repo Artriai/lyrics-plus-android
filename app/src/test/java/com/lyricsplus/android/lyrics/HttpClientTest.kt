@@ -11,6 +11,27 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class HttpClientTest {
+    @Test fun cancellationWakesRetryDelayWithoutWaitingForItsTimeout() = runBlocking {
+        withTimeout(5000L) {
+            val waiting = CompletableDeferred<Unit>()
+            val cancelled = AtomicBoolean(false)
+            val lookup = async {
+                HttpClient.lyricsRequest {
+                    waiting.complete(Unit)
+                    try {
+                        HttpClient.pauseLyricsRequest(60_000L)
+                    } catch (error: CancellationException) {
+                        cancelled.set(true)
+                        throw error
+                    }
+                }
+            }
+            waiting.await()
+            lookup.cancelAndJoin()
+            assertTrue(cancelled.get())
+        }
+    }
+
     @Test fun cancellationClosesBlockingBodyReadAndPreventsFallbackCalls() = runBlocking {
         withTimeout(5000L) {
             ServerSocket(0).use { server ->

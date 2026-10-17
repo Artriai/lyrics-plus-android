@@ -7,6 +7,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import org.json.JSONStringer
 
 class QQMusicClient {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
@@ -89,16 +90,55 @@ class QQMusicClient {
         return unescaped.replace("__NEWLINE_PLACEHOLDER__", "\n")
     }
 
-    private fun searchSongs(query: LyricsSearchQuery): List<LyricsCandidate<String>> {
-        // Full search supplies album/duration and handles version suffixes.
-        // The suggestion endpoint remains a fallback if full search is unavailable.
-        val fullSearch = runCatching { searchFullSongs(query) }
-        fullSearch.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
-        val suggestions = runCatching { searchSuggestions(query) }
-        suggestions.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
-        fullSearch.exceptionOrNull()?.let { throw it }
-        suggestions.exceptionOrNull()?.let { throw it }
-        return emptyList()
+    private fun searchSongs(query: LyricsSearchQuery): List<LyricsCandidate<String>> =
+        QqMusicSearch.withFallback(
+            fullSearches = listOf({ searchDesktopSongs(query) }, { searchFullSongs(query) }),
+            suggestions = { searchSuggestions(query) }
+        )
+
+    private fun searchDesktopSongs(query: LyricsSearchQuery): List<LyricsCandidate<String>> {
+        // Use the module name as the request key and omit the generic comm envelope.
+        // JSONStringer preserves the verified wire format and escapes arbitrary titles.
+        val payload = JSONStringer().`object`()
+            .key(QQ_MUSIC_SEARCH_MODULE).`object`()
+            .key("module").value(QQ_MUSIC_SEARCH_MODULE)
+            .key("method").value("DoSearchForQQMusicDesktop")
+            .key("param").`object`()
+            .key("search_type").value(0)
+            .key("query").value("${query.title} ${query.artist}".trim())
+            .key("page_num").value(1)
+            .key("num_per_page").value(10)
+            .endObject().endObject().endObject().toString()
+
+        val json = QqMusicSearch.requestWithRetry(
+            request = {
+                val response = requestPost(MUSIC_U_API, payload)
+                if (response.code !in 200..299) throw java.io.IOException("QQ 音乐 HTTP ${response.code}")
+                val body = JSONObject(response.body)
+                val rootCode = body.optInt("code", -1)
+                val moduleCode = body.optJSONObject(QQ_MUSIC_SEARCH_MODULE)?.optInt("code", -1) ?: -1
+                QqMusicSearchResponse(body, if (rootCode != 0) rootCode else moduleCode)
+            },
+            pause = HttpClient::pauseLyricsRequest
+        )
+        val songs = json.optJSONObject(QQ_MUSIC_SEARCH_MODULE)?.optJSONObject("data")
+            ?.optJSONObject("body")?.optJSONObject("song")?.optJSONArray("list")
+            ?: throw java.io.IOException("QQ 音乐完整搜索服务响应不完整")
+        return (0 until songs.length()).mapNotNull { index ->
+            val song = songs.getJSONObject(index)
+            val mid = song.optString("mid")
+            if (mid.isBlank()) return@mapNotNull null
+            val singers = song.optJSONArray("singer")
+            val artist = if (singers == null) "" else (0 until singers.length())
+                .joinToString(" ") { singers.getJSONObject(it).optString("name") }
+            val album = song.optJSONObject("album")
+            LyricsCandidate(mid, SongMetadata(
+                title = QqMusicSearchMetadata.title(song.optString("title").ifBlank { song.optString("name") }),
+                artist = artist,
+                album = album?.optString("name").orEmpty().ifBlank { album?.optString("title").orEmpty() },
+                durationSeconds = song.optDouble("interval", 0.0)
+            ), mid)
+        }
     }
 
     private fun searchFullSongs(query: LyricsSearchQuery): List<LyricsCandidate<String>> {
@@ -267,6 +307,7 @@ class QQMusicClient {
 
     private companion object {
         const val MUSIC_U_API = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+        const val QQ_MUSIC_SEARCH_MODULE = "music.search.SearchCgiService"
         const val QQ_MUSIC_FULL_SEARCH_API = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
         const val QQ_MUSIC_SEARCH_API = "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg"
         const val QQ_MUSIC_CLIENT_TYPE = 11

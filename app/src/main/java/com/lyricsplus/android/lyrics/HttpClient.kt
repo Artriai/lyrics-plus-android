@@ -10,6 +10,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -40,9 +41,21 @@ object HttpClient {
         activeLyricsRequest.get()?.add(call)
     }
 
+    fun pauseLyricsRequest(milliseconds: Long) {
+        val calls = activeLyricsRequest.get()
+        if (calls != null) calls.pause(milliseconds) else Thread.sleep(milliseconds)
+    }
+
     private class LyricsCalls {
         private var cancelled = false
         private val calls = mutableListOf<Call>()
+        private val cancellation = CountDownLatch(1)
+
+        fun pause(milliseconds: Long) {
+            if (cancellation.await(milliseconds, TimeUnit.MILLISECONDS)) {
+                throw CancellationException("Lyrics request cancelled")
+            }
+        }
 
         @Synchronized fun checkActive() {
             if (cancelled) throw CancellationException("Lyrics request cancelled")
@@ -55,6 +68,7 @@ object HttpClient {
 
         @Synchronized fun cancel() {
             cancelled = true
+            cancellation.countDown()
             calls.forEach { it.cancel() }
         }
     }
