@@ -14,6 +14,7 @@ import com.lyricsplus.android.data.LyricsLine
 import com.lyricsplus.android.data.NowPlaying
 import com.lyricsplus.android.data.PlaybackAnchor
 import com.lyricsplus.android.lyrics.LyricsProvider
+import com.lyricsplus.android.lyrics.LyricsSearch
 import com.lyricsplus.android.spotify.SpotifyMediaSnapshot
 import com.lyricsplus.android.spotify.SpotifyBroadcasts
 import com.lyricsplus.android.spotify.LyricsNotificationListenerService
@@ -287,26 +288,19 @@ class MainViewModel(
                         )
                     },
                     onFailure = { error ->
-                        // Show "instrumental" as a lyric line so the WebView
-                        // renders it with the colourful background instead of
-                        // falling back to the black EmptyOverlay.
-                        val instrumentalLine = listOf(
+                        // Show the actual lookup failure without claiming the song is instrumental.
+                        val errorLine = listOf(
                             LyricsLine(
                                 startTimeMs = 0L,
-                                text = "纯音乐 / 无歌词",
+                                text = userFacingLyricsError(error),
                                 translation = "",
                                 reading = null
                             )
                         )
-                        val failedSource = when (targetSource) {
-                            "QQ音乐" -> "QQ音乐 (无歌词)"
-                            "网易云音乐" -> "网易云音乐 (无歌词)"
-                            "LRCLIB" -> "LRCLIB (无歌词)"
-                            else -> "未找到"
-                        }
+                        val failedSource = LyricsSearch.failureSource(targetSource, error)
                         currentLyricsScore = 0
                         state.copy(
-                            lyrics = instrumentalLine,
+                            lyrics = errorLine,
                             isLoadingLyrics = false,
                             message = userFacingLyricsError(error),
                             activeLyricsSource = failedSource
@@ -452,23 +446,18 @@ class MainViewModel(
                             )
                         },
                         onFailure = { error ->
-                            val instrumentalLine = listOf(
+                            val errorLine = listOf(
                                 LyricsLine(
                                     startTimeMs = 0L,
-                                    text = "纯音乐 / 无歌词",
+                                    text = userFacingLyricsError(error),
                                     translation = "",
                                     reading = null
                                 )
                             )
-                            val failedSource = when (nextSource) {
-                                "QQ音乐" -> "QQ音乐 (无歌词)"
-                                "网易云音乐" -> "网易云音乐 (无歌词)"
-                                "LRCLIB" -> "LRCLIB (无歌词)"
-                                else -> "未找到"
-                            }
+                            val failedSource = LyricsSearch.failureSource(nextSource, error)
                             currentLyricsScore = 0
                             state.copy(
-                                lyrics = instrumentalLine,
+                                lyrics = errorLine,
                                 isLoadingLyrics = false,
                                 message = userFacingLyricsError(error),
                                 activeLyricsSource = failedSource
@@ -739,14 +728,7 @@ class MainViewModel(
         else -> source
     }
 
-    private fun userFacingLyricsError(error: Throwable?): String {
-        val message = error?.message.orEmpty()
-        return when {
-            message.contains("网络") || message.contains("超时") || message.contains("HTTP", ignoreCase = true) ->
-                "歌词服务请求失败"
-            else -> "未找到同步歌词"
-        }
-    }
+    private fun userFacingLyricsError(error: Throwable?): String = LyricsSearch.failureMessage(error)
 
     private fun userFacingNetworkError(error: Throwable): String {
         val message = error.message.orEmpty()

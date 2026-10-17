@@ -200,7 +200,7 @@ class SuperIslandLyricsService : Service() {
             }
             currentLyrics = result.fold(
                 onSuccess = { it.lyrics },
-                onFailure = { listOf(LyricsLine(0L, "纯音乐 / 无歌词")) }
+                onFailure = { listOf(LyricsLine(0L, LyricsSearch.failureMessage(it))) }
             )
         }
     }

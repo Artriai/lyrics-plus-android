@@ -7,72 +7,53 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URLEncoder
-import kotlin.math.abs
 
 class NeteaseClient {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val searchResult = searchSongId(track) ?: error("网易云音乐未找到歌曲")
-            val lyricJson = fetchLyrics(searchResult.first) ?: error("网易云音乐未找到歌词")
-            if (lyricJson.optBoolean("nolyric", false)) {
-                return@runCatching LyricsSearchResult(listOf(LyricsLine(0L, "♪ 纯音乐 ♪")), searchResult.second)
-            }
-            
-            val yrcString = lyricJson.optJSONObject("yrc")?.optString("lyric").orEmpty()
-            val lrcString = lyricJson.optJSONObject("lrc")?.optString("lyric").orEmpty()
-
-            val synced = if (yrcString.isNotBlank()) {
-                parseNeteaseYrc(yrcString)
-            } else {
-                parseNeteaseLrc(lrcString)
-            }.ifEmpty { error("网易云音乐同步歌词为空") }
-
-            val translation = parseNeteaseLrc(lyricJson.optJSONObject("tlyric")?.optString("lyric").orEmpty())
-
-            val merged = mergeTranslation(synced, translation)
-            LyricsSearchResult(merged, searchResult.second)
+            LyricsSearch.find(
+                source = "网易云音乐",
+                expected = SongMetadata(track.track, track.artist, track.album, track.durationSeconds.toDouble()),
+                search = ::searchSongs,
+                fetch = { fetchSyncedLyrics(it.value) }
+            )
         }
     }
 
-    private fun searchSongId(track: NowPlaying): Pair<Long, Int>? {
-        val cleanTitle = cleanTitle(track.track)
+    private fun fetchSyncedLyrics(songId: Long): List<LyricsLine> {
+        val lyricJson = fetchLyrics(songId) ?: return emptyList()
+        if (lyricJson.optBoolean("nolyric", false)) return listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
+        val yrc = lyricJson.optJSONObject("yrc")?.optString("lyric").orEmpty()
+        val lrc = lyricJson.optJSONObject("lrc")?.optString("lyric").orEmpty()
+        val synced = if (yrc.isNotBlank()) parseNeteaseYrc(yrc).ifEmpty { parseNeteaseLrc(lrc) }
+            else parseNeteaseLrc(lrc)
+        val translation = parseNeteaseLrc(lyricJson.optJSONObject("tlyric")?.optString("lyric").orEmpty())
+        return mergeTranslation(synced, translation)
+    }
+
+    private fun searchSongs(query: LyricsSearchQuery): List<LyricsCandidate<Long>> {
         val url = "https://music.163.com/api/cloudsearch/pc?csrf_token=&type=1&offset=0&limit=10&s=" +
-            "${cleanTitle} ${track.artist}".urlEncode()
+            "${query.title} ${query.artist}".trim().urlEncode()
         val response = request(url)
-        if (response.code !in 200..299) return null
-
-        val songs = JSONObject(response.body)
-            .optJSONObject("result")
-            ?.optJSONArray("songs")
-            ?: return null
-
-        val normalizedTitle = normalizeForCompare(cleanTitle)
-        val normalizedArtist = normalizeForCompare(track.artist)
-        val normalizedAlbum = normalizeForCompare(track.album)
-
-        return (0 until songs.length())
-            .map { songs.getJSONObject(it) }
-            .map { song ->
-                val name = normalizeForCompare(song.optString("name"))
-                val album = normalizeForCompare(song.optJSONObject("al")?.optString("name") ?: song.optJSONObject("album")?.optString("name").orEmpty())
-                val artists = normalizeForCompare(song.artistNames())
-                val durationMs = song.optLong("dt", song.optLong("duration", 0L))
-                val expectedDurationMs = track.durationSeconds * 1000L
-                val durationDiff = if (expectedDurationMs > 0) abs(expectedDurationMs - durationMs) else Long.MAX_VALUE
-
-                var score = 0
-                if (name == normalizedTitle) score += 50
-                else if (normalizedTitle.isNotBlank() && (name.contains(normalizedTitle) || normalizedTitle.contains(name))) score += 20
-                if (artists.isNotBlank() && normalizedArtist.isNotBlank() && artists == normalizedArtist) score += 40
-                else if (artists.isNotBlank() && normalizedArtist.isNotBlank() && (artists.contains(normalizedArtist) || normalizedArtist.contains(artists))) score += 25
-                if (album.isNotBlank() && album == normalizedAlbum) score += 20
-                if (durationDiff < 3_000) score += 30
-                else if (durationDiff < 10_000) score += 10
-
-                song.optLong("id") to score
-            }
-            .filter { it.first > 0 && it.second > 0 }
-            .maxByOrNull { it.second }
+        if (response.code !in 200..299) throw java.io.IOException("网易云音乐 HTTP ${response.code}")
+        val json = JSONObject(response.body)
+        if (json.optInt("code", -1) != 200) throw java.io.IOException("网易云音乐搜索服务请求失败")
+        val songs = json.optJSONObject("result")?.optJSONArray("songs") ?: return emptyList()
+        return (0 until songs.length()).mapNotNull { index ->
+            val song = songs.getJSONObject(index)
+            val id = song.optLong("id")
+            if (id <= 0) null else LyricsCandidate(
+                id.toString(),
+                SongMetadata(
+                    title = song.optString("name"),
+                    artist = song.artistNames(),
+                    album = song.optJSONObject("al")?.optString("name")
+                        ?: song.optJSONObject("album")?.optString("name").orEmpty(),
+                    durationSeconds = song.optLong("dt", song.optLong("duration", 0L)) / 1000.0
+                ),
+                id
+            )
+        }
     }
 
     private fun fetchLyrics(songId: Long): JSONObject? {
@@ -81,21 +62,27 @@ class NeteaseClient {
             "https://music.163.com/api/song/lyric?id=$songId&lv=1&kv=1&tv=1&yv=1&rv=1"
         )
 
-        return urls.firstNotNullOfOrNull { url ->
-            val response = request(url)
-            if (response.code !in 200..299) return@firstNotNullOfOrNull null
-            val json = JSONObject(response.body)
-            if (
-                json.optJSONObject("lrc")?.optString("lyric").orEmpty().isNotBlank() ||
-                json.optJSONObject("yrc")?.optString("lyric").orEmpty().isNotBlank() ||
-                json.optJSONObject("tlyric")?.optString("lyric").orEmpty().isNotBlank() ||
-                json.optBoolean("nolyric", false)
-            ) {
-                json
-            } else {
-                null
+        var failure: java.io.IOException? = null
+        for (url in urls) {
+            val response = try { request(url) } catch (error: java.io.IOException) {
+                failure = error
+                continue
             }
+            if (response.code !in 200..299) {
+                failure = java.io.IOException("网易云音乐 HTTP ${response.code}")
+                continue
+            }
+            val json = JSONObject(response.body)
+            if (json.optInt("code", -1) != 200) {
+                failure = java.io.IOException("网易云音乐歌词服务请求失败")
+                continue
+            }
+            if (json.optJSONObject("lrc")?.optString("lyric").orEmpty().isNotBlank() ||
+                json.optJSONObject("yrc")?.optString("lyric").orEmpty().isNotBlank() ||
+                json.optBoolean("nolyric", false)) return json
         }
+        failure?.let { throw it }
+        return null
     }
 
     private fun parseNeteaseYrc(raw: String): List<LyricsLine> {
@@ -155,12 +142,6 @@ class NeteaseClient {
             .joinToString(" ") { artists.getJSONObject(it).optString("name") }
     }
 
-    private fun cleanTitle(value: String): String =
-        value.replace(extraInfoRegex, "").replace(featRegex, "").trim()
-
-    private fun normalizeForCompare(value: String): String =
-        value.lowercase().replace(whitespaceRegex, "")
-
     private fun comparableText(value: String): String =
         value.replace(spacingRegex, "").replace(punctuationRegex, "")
 
@@ -184,9 +165,6 @@ class NeteaseClient {
     private companion object {
         val timestampRegex = Regex("\\[(\\d{1,2}):(\\d{2})(?:[.:](\\d{1,3}))?]")
         val yrcSyllableRegex = Regex("\\(\\d+,\\d+(?:,\\d+)?\\)")
-        val extraInfoRegex = Regex("\\s*[\\[(（].*?(?:remaster|remastered|live|mono|stereo|version|edit|mix|feat\\.?|with).*?[\\]）)]\\s*", RegexOption.IGNORE_CASE)
-        val featRegex = Regex("\\s+(feat\\.?|ft\\.?|with)\\s+.+$", RegexOption.IGNORE_CASE)
-        val whitespaceRegex = Regex("\\s+")
         val spacingRegex = Regex("[　\\s]")
         val punctuationRegex = Regex("""[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~？！，。、《》【】「」]""")
         val creditRegex = Regex(

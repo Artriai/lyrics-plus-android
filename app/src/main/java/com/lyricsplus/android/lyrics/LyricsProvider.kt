@@ -84,7 +84,7 @@ class LyricsProvider(
                     cached.lyrics
                 }
                 // Return cached version with perfect score to avoid background override
-                return@runCatching CachedLyricsResult(finalLyrics, cached.source, score = 140)
+                return@runCatching CachedLyricsResult(finalLyrics, cached.source, score = LyricsMatching.MAX_MATCH_SCORE)
             }
 
             // Clear in-memory cache for this track key on starting fresh
@@ -103,22 +103,19 @@ class LyricsProvider(
 
             val bestCandidate = if (candidates.isNotEmpty()) {
                 candidates.maxByOrNull { (result, _) ->
-                    var finalScore = result.score
-                    // Give a massive +100 bonus to syllable-level (YRC/QRC) lyrics
-                    val hasSyllables = result.lyrics.any { line -> timestampStripRegex.containsMatchIn(line.text) }
-                    if (hasSyllables) {
-                        finalScore += 100
-                    }
-                    // Tie-breaker: prefer NetEase over QQ Music if score is equal
-                    finalScore
+                    // Keep the full +100 word-timing bonus on top of the
+                    // common 0..100 match score, regardless of provider.
+                    LyricsMatching.selectionScore(result.score, result.lyrics)
                 }
             } else null
 
+            var lrclibFailure: Throwable? = null
             val resolvedPair = if (bestCandidate != null) {
                 bestCandidate
             } else {
                 // Fallback to LRCLIB if both NetEase and QQ Music failed
-                val lrclib = runCatching { findSyncedLyricsForSource(track, "LRCLIB").getOrThrow() }.getOrNull()
+                val lrclib = findSyncedLyricsForSource(track, "LRCLIB")
+                    .onFailure { lrclibFailure = it }.getOrNull()
                 if (lrclib != null) {
                     lrclib to "LRCLIB"
                 } else {
@@ -129,13 +126,15 @@ class LyricsProvider(
             if (resolvedPair == null) {
                 val neteaseErr = neteaseResult.exceptionOrNull()
                 val qqErr = qqResult.exceptionOrNull()
-                if (neteaseErr is java.io.IOException || qqErr is java.io.IOException) {
-                    throw (neteaseErr as? java.io.IOException) ?: (qqErr as? java.io.IOException) ?: neteaseErr ?: qqErr ?: Exception("网络错误")
+                val networkFailure = listOfNotNull(neteaseErr, qqErr, lrclibFailure)
+                    .firstOrNull { it is java.io.IOException }
+                if (networkFailure != null) {
+                    throw networkFailure
                 } else {
-                    val instrumental = listOf(LyricsLine(0L, "纯音乐 / 无歌词"))
-                    val result = CachedLyricsResult(instrumental, "纯音乐", score = 0)
-                    inMemoryCache["$trackKey|纯音乐"] = result
-                    return@runCatching result
+                    throw listOfNotNull(neteaseErr, qqErr, lrclibFailure)
+                        .firstOrNull { it is LyricsSearchException && it.reason == LyricsSearchFailure.NO_SYNCED_LYRICS }
+                        ?: neteaseErr ?: qqErr ?: lrclibFailure
+                        ?: LyricsSearchException(LyricsSearchFailure.NO_MATCH, "歌词服务")
                 }
             }
 

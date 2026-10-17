@@ -370,8 +370,8 @@ class FloatingLyricsService : Service() {
                 onSuccess = { cacheResult ->
                     currentLyrics = cacheResult.lyrics
                 },
-                onFailure = {
-                    currentLyrics = listOf(LyricsLine(0L, "纯音乐 / 无歌词"))
+                onFailure = { error ->
+                    currentLyrics = listOf(LyricsLine(0L, LyricsSearch.failureMessage(error)))
                 }
             )
         }
