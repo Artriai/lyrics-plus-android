@@ -46,13 +46,15 @@ class SuperIslandLyricsService : Service() {
     private var trackRequestKey: String? = null
     private var tickJob: kotlinx.coroutines.Job? = null
     private lateinit var prefs: SharedPreferences
-    private var currentLyricsSource: String? = null
+    private var requestedLyricsSource: String? = null
+    private var lyricsFetchJob: kotlinx.coroutines.Job? = null
+    private val lyricsGeneration = LyricsRequestGeneration()
     private var mediaSyncInFlight = false
     private var lastMediaSyncElapsed = 0L
     private var hasAppState = false
     private var collapsedForPausedPlayback = false
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == PREF_PREFERRED_LYRICS_SOURCE) {
+        if (key == PREF_PREFERRED_LYRICS_SOURCE && !hasAppState) {
             currentTrack?.let { track ->
                 currentLyrics = emptyList()
                 fetchLyrics(track)
@@ -130,11 +132,13 @@ class SuperIslandLyricsService : Service() {
 
     private fun applyAppState(state: LyricsUiState) {
         if (!state.nowPlaying.hasTrack) return
+        lyricsGeneration.next()
+        lyricsFetchJob?.cancel()
         currentTrack = state.nowPlaying
         currentLyrics = state.lyrics
         currentPlayback = state.playback
         lyricsOffsetMs = state.lyricsOffsetMs
-        currentLyricsSource = state.activeLyricsSource
+        requestedLyricsSource = preferredLyricsSource()
         trackRequestKey = state.nowPlaying.stableIslandRequestKey()
         renderCurrentState()
     }
@@ -172,9 +176,9 @@ class SuperIslandLyricsService : Service() {
         if (track != null && track.hasTrack) {
             val key = track.stableIslandRequestKey()
             val preferredSource = preferredLyricsSource()
-            if (trackRequestKey != key || currentLyricsSource != preferredSource) {
+            if (trackRequestKey != key || requestedLyricsSource != preferredSource) {
                 trackRequestKey = key
-                currentLyricsSource = preferredSource
+                requestedLyricsSource = preferredSource
                 currentLyrics = emptyList()
                 lyricsOffsetMs = 0L
                 currentTrack = track
@@ -192,16 +196,29 @@ class SuperIslandLyricsService : Service() {
     }
 
     private fun fetchLyrics(track: NowPlaying) {
-        scope.launch {
-            val source = preferredLyricsSource()
-            currentLyricsSource = source
-            val result = withContext(Dispatchers.IO) {
-                lyricsProvider.findSyncedLyrics(track, source)
-            }
-            currentLyrics = result.fold(
-                onSuccess = { it.lyrics },
-                onFailure = { listOf(LyricsLine(0L, LyricsSearch.failureMessage(it))) }
+        lyricsFetchJob?.cancel()
+        val generation = lyricsGeneration.next()
+        val key = track.stableIslandRequestKey()
+        val source = preferredLyricsSource()
+        requestedLyricsSource = source
+        lyricsFetchJob = scope.launch {
+            fun isCurrent() = isActive && lyricsGeneration.isCurrent(generation) && trackRequestKey == key
+            val result = lyricsProvider.findSyncedLyrics(track, source, onUpdate = { candidate ->
+                if (isCurrent()) {
+                    currentLyrics = candidate.lyrics
+                    renderCurrentState()
+                }
+            })
+            if (!isCurrent()) return@launch
+            result.fold(
+                onSuccess = { currentLyrics = it.lyrics },
+                onFailure = { error ->
+                    if (currentLyrics.isEmpty()) {
+                        currentLyrics = listOf(LyricsLine(0L, LyricsSearch.failureMessage(error)))
+                    }
+                }
             )
+            renderCurrentState()
         }
     }
 

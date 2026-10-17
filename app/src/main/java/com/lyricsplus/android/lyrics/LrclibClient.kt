@@ -3,14 +3,12 @@ package com.lyricsplus.android.lyrics
 import com.lyricsplus.android.data.LyricsLine
 import com.lyricsplus.android.data.NowPlaying
 import com.lyricsplus.android.data.LyricsSearchResult
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
 class LrclibClient {
-    suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
+    suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
         runCatching {
             val expected = SongMetadata(track.track, track.artist, track.album, track.durationSeconds.toDouble())
             fetchExact(track, expected) ?: LyricsSearch.find(
@@ -72,7 +70,7 @@ class LrclibClient {
             .header("User-Agent", "LyricsPlusAndroid/0.1")
             .build()
 
-        return HttpClient.okHttpClient.newCall(request).execute().use { response ->
+        return HttpClient.newLyricsCall(request).execute().use { response ->
             HttpResponse(
                 code = response.code,
                 body = response.body?.string().orEmpty()

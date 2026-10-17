@@ -3,15 +3,13 @@ package com.lyricsplus.android.lyrics
 import com.lyricsplus.android.data.LyricsLine
 import com.lyricsplus.android.data.NowPlaying
 import com.lyricsplus.android.data.LyricsSearchResult
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 class QQMusicClient {
-    suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
+    suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
         runCatching {
             LyricsSearch.find(
                 source = "QQ 音乐",
@@ -234,7 +232,7 @@ class QQMusicClient {
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
 
-        return HttpClient.okHttpClient.newCall(request).execute().use { response ->
+        return HttpClient.newLyricsCall(request).execute().use { response ->
             HttpResponse(
                 code = response.code,
                 body = response.body?.string().orEmpty()
@@ -257,7 +255,7 @@ class QQMusicClient {
             .header("User-Agent", userAgent)
             .build()
 
-        return HttpClient.okHttpClient.newCall(request).execute().use { response ->
+        return HttpClient.newLyricsCall(request).execute().use { response ->
             HttpResponse(
                 code = response.code,
                 body = response.body?.string().orEmpty()

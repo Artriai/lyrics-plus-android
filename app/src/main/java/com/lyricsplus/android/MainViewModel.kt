@@ -13,6 +13,9 @@ import com.lyricsplus.android.analytics.AnonymousStats
 import com.lyricsplus.android.data.LyricsLine
 import com.lyricsplus.android.data.NowPlaying
 import com.lyricsplus.android.data.PlaybackAnchor
+import com.lyricsplus.android.lyrics.CachedLyricsResult
+import com.lyricsplus.android.lyrics.LyricsMatching
+import com.lyricsplus.android.lyrics.LyricsRequestGeneration
 import com.lyricsplus.android.lyrics.LyricsProvider
 import com.lyricsplus.android.lyrics.LyricsSearch
 import com.lyricsplus.android.spotify.SpotifyMediaSnapshot
@@ -74,7 +77,8 @@ class MainViewModel(
     private var preferredSource: String? = null
     private var lyricsFetchJob: kotlinx.coroutines.Job? = null
     private var activeToast: android.widget.Toast? = null
-    private var currentLyricsScore: Int = 0
+    private var currentLyricsScore: Int = -1
+    private val lyricsGeneration = LyricsRequestGeneration()
     private var autoUpdateCheckStarted = false
 
     init {
@@ -259,11 +263,28 @@ class MainViewModel(
         if (isNewTrack) {
             preferredSource = null
             prefs.edit().remove(PREF_PREFERRED_LYRICS_SOURCE).apply()
-            currentLyricsScore = 0
         }
         lyricsRequestKey = requestKey
 
         lyricsFetchJob?.cancel()
+        val generation = lyricsGeneration.next()
+        currentLyricsScore = -1
+
+        fun applyCandidate(candidate: CachedLyricsResult) {
+            if (!lyricsGeneration.isCurrent(generation) || lyricsRequestKey != requestKey ||
+                _uiState.value.nowPlaying.requestKey() != requestKey) return
+            val score = LyricsMatching.selectionScore(candidate.score, candidate.lyrics)
+            if (score <= currentLyricsScore) return
+            currentLyricsScore = score
+            _uiState.update { state ->
+                state.copy(
+                    lyrics = candidate.lyrics,
+                    isLoadingLyrics = false,
+                    message = "同步歌词已加载",
+                    activeLyricsSource = candidate.source
+                )
+            }
+        }
 
         lyricsFetchJob = viewModelScope.launch {
             val isCached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -273,49 +294,37 @@ class MainViewModel(
                 _uiState.update { it.copy(isLoadingLyrics = true, message = "正在搜索同步歌词...") }
             }
 
-            val result = lyricsProvider.findSyncedLyrics(track, targetSource)
-            if (lyricsRequestKey != requestKey) return@launch
+            var receivedAutomaticResult = false
+            val result = lyricsProvider.findSyncedLyrics(track, targetSource, onUpdate = { candidate ->
+                receivedAutomaticResult = true
+                applyCandidate(candidate)
+            })
+            if (!isActive || !lyricsGeneration.isCurrent(generation) || lyricsRequestKey != requestKey ||
+                _uiState.value.nowPlaying.requestKey() != requestKey) return@launch
 
-            _uiState.update { state ->
-                result.fold(
-                    onSuccess = { cacheResult ->
-                        currentLyricsScore = cacheResult.score
-                        state.copy(
-                            lyrics = cacheResult.lyrics,
-                            isLoadingLyrics = false,
-                            message = "同步歌词已加载",
-                            activeLyricsSource = cacheResult.source
-                        )
-                    },
-                    onFailure = { error ->
-                        // Show the actual lookup failure without claiming the song is instrumental.
-                        val errorLine = listOf(
-                            LyricsLine(
-                                startTimeMs = 0L,
-                                text = userFacingLyricsError(error),
-                                translation = "",
-                                reading = null
+            result.fold(
+                onSuccess = ::applyCandidate,
+                onFailure = { error ->
+                    // A failed late request must never clear already displayed lyrics.
+                    if (currentLyricsScore < 0) {
+                        _uiState.update { state ->
+                            state.copy(
+                                lyrics = listOf(LyricsLine(0L, userFacingLyricsError(error))),
+                                isLoadingLyrics = false,
+                                message = userFacingLyricsError(error),
+                                activeLyricsSource = LyricsSearch.failureSource(targetSource, error)
                             )
-                        )
-                        val failedSource = LyricsSearch.failureSource(targetSource, error)
-                        currentLyricsScore = 0
-                        state.copy(
-                            lyrics = errorLine,
-                            isLoadingLyrics = false,
-                            message = userFacingLyricsError(error),
-                            activeLyricsSource = failedSource
-                        )
+                        }
                     }
-                )
-            }
+                }
+            )
 
             val trackedSource = result.getOrNull()?.source ?: targetSource ?: "auto"
             AnonymousStats.trackLyricsFetchResult(getApplication(), trackedSource, result.isSuccess)
 
-            // Background pre-fetching when starting a song in Auto mode
-            // This pre-warms the cache for other sources in the background,
-            // providing an instant "秒切" experience if the user toggles sources manually.
-            if (targetSource == null && result.isSuccess) {
+            // Preserve existing cache-hit prewarming. A fresh race already ran
+            // both primaries; do not restart a failed/timed-out source afterward.
+            if (targetSource == null && result.isSuccess && !receivedAutomaticResult) {
                 val resolvedSource = result.getOrNull()?.source
                 if (resolvedSource != null && resolvedSource != "纯音乐") {
                     val remainingSources = listOf("QQ音乐", "网易云音乐", "LRCLIB").filter { it != resolvedSource }
@@ -388,6 +397,8 @@ class MainViewModel(
                 else -> "QQ音乐"
             }
 
+            val generation = lyricsGeneration.next()
+            val requestKey = nowPlaying.requestKey()
             preferredSource = nextSource
             prefs.edit().putString(PREF_PREFERRED_LYRICS_SOURCE, nextSource).apply()
 
@@ -416,7 +427,8 @@ class MainViewModel(
             lyricsFetchJob = viewModelScope.launch {
                 // Fetch using only the nextSource
                 val result = lyricsProvider.findSyncedLyrics(nowPlaying, nextSource)
-                if (!isActive) return@launch
+                if (!isActive || !lyricsGeneration.isCurrent(generation) ||
+                    _uiState.value.nowPlaying.requestKey() != requestKey) return@launch
 
                 if (result.isSuccess) {
                     val cacheResult = result.getOrNull()
@@ -432,12 +444,15 @@ class MainViewModel(
                     }
                 }
 
+                if (!isActive || !lyricsGeneration.isCurrent(generation) ||
+                    _uiState.value.nowPlaying.requestKey() != requestKey) return@launch
+
                 AnonymousStats.trackLyricsFetchResult(getApplication(), nextSource, result.isSuccess)
 
                 _uiState.update { state ->
                     result.fold(
                         onSuccess = { cacheResult ->
-                            currentLyricsScore = cacheResult.score
+                            currentLyricsScore = LyricsMatching.selectionScore(cacheResult.score, cacheResult.lyrics)
                             state.copy(
                                 lyrics = cacheResult.lyrics,
                                 isLoadingLyrics = false,

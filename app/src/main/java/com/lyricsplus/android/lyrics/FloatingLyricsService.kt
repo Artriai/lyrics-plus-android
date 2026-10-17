@@ -104,6 +104,8 @@ class FloatingLyricsService : Service() {
     private var tickJob: kotlinx.coroutines.Job? = null
     private var positionSaveJob: kotlinx.coroutines.Job? = null
     private var trackRequestKey: String? = null
+    private var lyricsFetchJob: kotlinx.coroutines.Job? = null
+    private val lyricsGeneration = LyricsRequestGeneration()
     private var mediaSyncInFlight = false
     private var lastMediaSyncElapsed = 0L
     private var hasAppState = false
@@ -136,7 +138,11 @@ class FloatingLyricsService : Service() {
             isLocked = false
             updateNotification("悬浮歌词已解锁，点击可移动")
         } else if (action == ACTION_REFRESH_LYRICS) {
-            currentTrack?.let { fetchLyricsInBackground(it) }
+            if (hasAppState) {
+                AppLyricsStateStore.state.value?.let(::applyAppState)
+            } else {
+                currentTrack?.let { fetchLyricsInBackground(it) }
+            }
         } else if (action == ACTION_UPDATE_OFFSET) {
             lyricsOffsetMs = intent.getLongExtra(EXTRA_OFFSET, 0L)
         } else {
@@ -280,6 +286,8 @@ class FloatingLyricsService : Service() {
 
     private fun applyAppState(state: LyricsUiState) {
         if (!state.nowPlaying.hasTrack) return
+        lyricsGeneration.next()
+        lyricsFetchJob?.cancel()
         currentTrack = state.nowPlaying
         currentLyrics = state.lyrics
         currentPlayback = state.playback
@@ -362,16 +370,21 @@ class FloatingLyricsService : Service() {
     }
 
     private fun fetchLyricsInBackground(track: NowPlaying) {
-        serviceScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                lyricsProvider.findSyncedLyrics(track)
-            }
+        lyricsFetchJob?.cancel()
+        val generation = lyricsGeneration.next()
+        val key = track.stableFloatingRequestKey()
+        lyricsFetchJob = serviceScope.launch {
+            fun isCurrent() = isActive && lyricsGeneration.isCurrent(generation) && trackRequestKey == key
+            val result = lyricsProvider.findSyncedLyrics(track, onUpdate = { candidate ->
+                if (isCurrent()) currentLyrics = candidate.lyrics
+            })
+            if (!isCurrent()) return@launch
             result.fold(
-                onSuccess = { cacheResult ->
-                    currentLyrics = cacheResult.lyrics
-                },
+                onSuccess = { currentLyrics = it.lyrics },
                 onFailure = { error ->
-                    currentLyrics = listOf(LyricsLine(0L, LyricsSearch.failureMessage(error)))
+                    if (currentLyrics.isEmpty()) {
+                        currentLyrics = listOf(LyricsLine(0L, LyricsSearch.failureMessage(error)))
+                    }
                 }
             )
         }

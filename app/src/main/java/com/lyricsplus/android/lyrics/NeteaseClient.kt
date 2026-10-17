@@ -3,13 +3,11 @@ package com.lyricsplus.android.lyrics
 import com.lyricsplus.android.data.LyricsLine
 import com.lyricsplus.android.data.NowPlaying
 import com.lyricsplus.android.data.LyricsSearchResult
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URLEncoder
 
 class NeteaseClient {
-    suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
+    suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
         runCatching {
             LyricsSearch.find(
                 source = "网易云音乐",
@@ -128,7 +126,7 @@ class NeteaseClient {
             .header("Referer", "https://music.163.com/")
             .build()
 
-        return HttpClient.okHttpClient.newCall(request).execute().use { response ->
+        return HttpClient.newLyricsCall(request).execute().use { response ->
             HttpResponse(
                 code = response.code,
                 body = response.body?.string().orEmpty()
