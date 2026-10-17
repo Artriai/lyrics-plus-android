@@ -8,16 +8,21 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
-import kotlin.math.abs
 
 class LrclibClient {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = withContext(Dispatchers.IO) {
         runCatching {
-            fetchExact(track) ?: searchBestMatch(track) ?: error("LRCLIB 未找到同步歌词")
+            val expected = SongMetadata(track.track, track.artist, track.album, track.durationSeconds.toDouble())
+            fetchExact(track, expected) ?: LyricsSearch.find(
+                source = "LRCLIB",
+                expected = expected,
+                search = ::searchSongs,
+                fetch = { parseLyrics(it.value) }
+            )
         }
     }
 
-    private fun fetchExact(track: NowPlaying): LyricsSearchResult? {
+    private fun fetchExact(track: NowPlaying, expected: SongMetadata): LyricsSearchResult? {
         val query = buildString {
             append("https://lrclib.net/api/get")
             append("?track_name=").append(track.track.urlEncode())
@@ -25,98 +30,40 @@ class LrclibClient {
             if (track.album.isNotBlank()) append("&album_name=").append(track.album.urlEncode())
             if (track.durationSeconds > 0) append("&duration=").append(track.durationSeconds)
         }
-
         val response = request(query)
-        if (response.code !in 200..299) return null
-
+        if (response.code == 404) return null
+        if (response.code !in 200..299) throw java.io.IOException("LRCLIB HTTP ${response.code}")
         val obj = JSONObject(response.body)
-        val isInstrumental = obj.optBoolean("instrumental", false)
-        val enhanced = obj.optString("enhancedLyrics")
-        val synced = obj.optString("syncedLyrics")
-        
-        val lyrics = if (isInstrumental) {
-            listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
-        } else {
-            val lrcToParse = if (!enhanced.isNullOrBlank()) enhanced else synced
-            parseSynced(lrcToParse) ?: return null
-        }
-        
-        val score = calculateScore(track, obj)
+        val score = LyricsMatching.score(expected, obj.songMetadata()) ?: return null
+        val lyrics = parseLyrics(obj).ifEmpty { return null }
         return LyricsSearchResult(lyrics, score)
     }
 
-    private fun searchBestMatch(track: NowPlaying): LyricsSearchResult? {
-        val query = buildString {
-            append("https://lrclib.net/api/search")
-            append("?track_name=").append(track.track.urlEncode())
-            append("&artist_name=").append(track.artist.urlEncode())
+    private fun searchSongs(query: LyricsSearchQuery): List<LyricsCandidate<JSONObject>> {
+        val url = buildString {
+            append("https://lrclib.net/api/search?track_name=").append(query.title.urlEncode())
+            if (query.artist.isNotBlank()) append("&artist_name=").append(query.artist.urlEncode())
         }
-
-        val response = request(query)
-        if (response.code !in 200..299) return null
-
+        val response = request(url)
+        if (response.code !in 200..299) throw java.io.IOException("LRCLIB HTTP ${response.code}")
         val results = JSONArray(response.body)
-        val candidates = (0 until results.length())
-            .map { results.getJSONObject(it) }
-            .filter { it.optString("syncedLyrics").isNotBlank() || it.optBoolean("instrumental", false) }
-
-        var bestCandidate: JSONObject? = null
-        var bestScore = -1
-        
-        for (candidate in candidates) {
-            val score = calculateScore(track, candidate)
-            if (score > bestScore) {
-                bestScore = score
-                bestCandidate = candidate
-            }
-        }
-        
-        val best = bestCandidate ?: return null
-        val isInstrumental = best.optBoolean("instrumental", false)
-        val enhanced = best.optString("enhancedLyrics")
-        val synced = best.optString("syncedLyrics")
-        
-        val lyrics = if (isInstrumental) {
-            listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
-        } else {
-            val lrcToParse = if (!enhanced.isNullOrBlank()) enhanced else synced
-            parseSynced(lrcToParse) ?: return null
-        }
-        
-        return LyricsSearchResult(lyrics, bestScore)
+        return (0 until results.length()).map { results.getJSONObject(it) }
+            .filter { it.optLong("id") > 0 }
+            .map { LyricsCandidate(it.optLong("id").toString(), it.songMetadata(), it) }
     }
 
-    private fun calculateScore(track: NowPlaying, candidate: JSONObject): Int {
-        val name = candidate.optString("trackName").lowercase().replace("\\s+".toRegex(), "")
-        val artist = candidate.optString("artistName").lowercase().replace("\\s+".toRegex(), "")
-        val album = candidate.optString("albumName").lowercase().replace("\\s+".toRegex(), "")
-        val duration = candidate.optLong("duration")
-        
-        val normalizedTitle = track.track.lowercase().replace("\\s+".toRegex(), "")
-        val normalizedArtist = track.artist.lowercase().replace("\\s+".toRegex(), "")
-        val normalizedAlbum = track.album.lowercase().replace("\\s+".toRegex(), "")
-        
-        val durationDiff = if (track.durationSeconds > 0) abs(track.durationSeconds - duration) else Long.MAX_VALUE
-        
-        var score = 0
-        if (name == normalizedTitle) score += 50
-        else if (normalizedTitle.isNotBlank() && (name.contains(normalizedTitle) || normalizedTitle.contains(name))) score += 20
-        
-        if (artist.isNotBlank() && normalizedArtist.isNotBlank() && artist == normalizedArtist) score += 40
-        else if (artist.isNotBlank() && normalizedArtist.isNotBlank() && (artist.contains(normalizedArtist) || normalizedArtist.contains(artist))) score += 25
-        
-        if (normalizedAlbum.isNotBlank() && album == normalizedAlbum) score += 20
-        
-        if (durationDiff < 3) score += 30
-        else if (durationDiff < 10) score += 10
-        
-        return score
-    }
+    private fun JSONObject.songMetadata(): SongMetadata = SongMetadata(
+        title = optString("trackName"),
+        artist = optString("artistName"),
+        album = optString("albumName"),
+        durationSeconds = optDouble("duration", 0.0)
+    )
 
-    private fun parseSynced(syncedLyrics: String): List<LyricsLine>? {
-        if (syncedLyrics.isBlank()) return null
-        val parsed = LrcParser.parse(syncedLyrics)
-        return if (parsed.isEmpty()) null else parsed
+    private fun parseLyrics(obj: JSONObject): List<LyricsLine> {
+        if (obj.optBoolean("instrumental", false)) return listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
+        val enhanced = if (obj.isNull("enhancedLyrics")) "" else obj.optString("enhancedLyrics")
+        val synced = if (obj.isNull("syncedLyrics")) "" else obj.optString("syncedLyrics")
+        return LrcParser.parse(enhanced).ifEmpty { LrcParser.parse(synced) }
     }
 
     private fun request(url: String): HttpResponse {
