@@ -109,10 +109,17 @@ class QQMusicClient {
             .key("page_num").value(1)
             .key("num_per_page").value(10)
             .endObject().endObject().endObject().toString()
+        val signature = QqMusicRequestSigner.sign(payload)
 
         val json = QqMusicSearch.requestWithRetry(
             request = {
-                val response = requestPost(MUSIC_U_API, payload)
+                // The unsigned musicu search can reject otherwise valid requests
+                // with 2001. The current musics gateway requires a zzc signature.
+                val url = MUSIC_S_API.toHttpUrl().newBuilder()
+                    .addQueryParameter("_", System.currentTimeMillis().toString())
+                    .addQueryParameter("sign", signature)
+                    .build()
+                val response = requestPost(url.toString(), payload)
                 if (response.code !in 200..299) throw java.io.IOException("QQ 音乐 HTTP ${response.code}")
                 val body = JSONObject(response.body)
                 val rootCode = body.optInt("code", -1)
@@ -307,6 +314,7 @@ class QQMusicClient {
 
     private companion object {
         const val MUSIC_U_API = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+        const val MUSIC_S_API = "https://u.y.qq.com/cgi-bin/musics.fcg"
         const val QQ_MUSIC_SEARCH_MODULE = "music.search.SearchCgiService"
         const val QQ_MUSIC_FULL_SEARCH_API = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
         const val QQ_MUSIC_SEARCH_API = "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg"

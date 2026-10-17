@@ -1,5 +1,17 @@
 # Third-party notices
 
+## QQMusicApi
+
+The QQ Music `zzc` request signature in
+`app/src/main/java/com/lyricsplus/android/lyrics/QqMusicRequestSigner.kt`
+is based on the protocol implementation in
+[L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi/blob/27861e51432ea6b6e88dc35c4e8c8e239c0339e8/qqmusic_api/algorithms/sign.py).
+The signed gateway request format is documented in that project's
+`qqmusic_api/core/executor.py`.
+
+QQMusicApi is distributed under the GNU General Public License version 3.
+This repository also includes that license in `LICENSE`.
+
 ## QQMusicDecoder
 
 The QQ Music QRC DES routines in
