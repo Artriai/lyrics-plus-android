@@ -71,6 +71,12 @@ internal class InFlightLyricsRequests(
     // Convenience for callers that synchronously begin and subscribe together.
     suspend fun markManualSelection(key: String) = markManualSelection(begin(key))
 
+    suspend fun commitSource(session: LyricsPlaybackSession, save: () -> Unit): Boolean = commitMutex.withLock {
+        val allowed = synchronized(lock) { latestSessions[session.key] === session }
+        if (allowed) save()
+        allowed
+    }
+
     suspend fun await(
         key: String,
         onUpdate: suspend (CachedLyricsResult) -> Unit,

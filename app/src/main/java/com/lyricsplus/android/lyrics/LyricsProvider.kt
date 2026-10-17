@@ -59,9 +59,11 @@ class LyricsProvider(
                 if (preferredSource != null) {
                     automaticRequests.markManualSelection(session)
                     // A manual selection fills only its own source cache, never the automatic winner.
-                    return@runCatching (withTimeoutOrNull(LyricsRace.REQUEST_TIMEOUT_MS) {
-                        findSyncedLyricsForSource(track, preferredSource)
-                    } ?: Result.failure(SocketTimeoutException("歌词搜索超过 8 秒"))).getOrThrow()
+                    val result = withTimeoutOrNull(LyricsRace.REQUEST_TIMEOUT_MS) {
+                        findSyncedLyricsForSource(track, preferredSource, session = session)
+                    } ?: Result.failure(SocketTimeoutException("歌词搜索超过 8 秒"))
+                    automaticRequests.requireCurrent(session)
+                    return@runCatching result.getOrThrow()
                 }
 
                 automaticRequests.await(
@@ -70,7 +72,7 @@ class LyricsProvider(
                 ) { publish, commit ->
                     LyricsCacheResolver().resolve(
                         cached = cacheDb.getLyrics(trackKey),
-                        request = { source, refresh -> findSyncedLyricsForSource(track, source, refresh) },
+                        request = { source, refresh -> findSyncedLyricsForSource(track, source, refresh, session) },
                         onUpdate = publish,
                         save = { entry -> commit { cacheDb.saveLyrics(trackKey, entry) } },
                         prepare = ::addReadings
@@ -83,16 +85,18 @@ class LyricsProvider(
     suspend fun findSyncedLyricsForSource(
         track: NowPlaying,
         sourceName: String,
-        refresh: Boolean = false
+        refresh: Boolean = false,
+        session: LyricsPlaybackSession = beginPlayback(track)
     ): Result<CachedLyricsResult> = withContext(Dispatchers.IO) {
         runCatching {
+            automaticRequests.requireCurrent(session)
             val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
             val memKey = "$trackKey|$sourceName"
             
             if (!refresh) {
                 val cached = inMemoryCache[memKey] ?: cacheDb.getSourceLyrics(trackKey, sourceName)
                 if (cached != null && cached.result.score != null) {
-                    inMemoryCache[memKey] = cached
+                    automaticRequests.commitSource(session) { inMemoryCache[memKey] = cached }
                     return@runCatching cached.result
                 }
             }
@@ -106,8 +110,10 @@ class LyricsProvider(
 
             val result = CachedLyricsResult(addReadings(searchResult.lyrics), sourceName, searchResult.score)
             val entry = LyricsCacheEntry(result, System.currentTimeMillis())
-            cacheDb.saveSourceLyrics(trackKey, entry)
-            inMemoryCache[memKey] = entry
+            automaticRequests.commitSource(session) {
+                cacheDb.saveSourceLyrics(trackKey, entry)
+                inMemoryCache[memKey] = entry
+            }
             result
         }
     }

@@ -224,4 +224,18 @@ class InFlightLyricsRequestsTest {
         }
     }
 
+    @Test fun sourceWritesAllowManualPrewarmingButRejectEarlierPlaybackOfTheSameSong() = runBlocking {
+        val pool = InFlightLyricsRequests(this)
+        val old = pool.begin("A")
+        pool.markManualSelection(old)
+        var source = first
+        assertTrue(pool.commitSource(old) { source = better })
+        assertEquals(better, source)
+        pool.begin("B")
+        val again = pool.begin("A")
+        assertTrue(pool.commitSource(again) { source = better })
+        assertFalse(pool.commitSource(old) { source = first })
+        assertEquals(better, source)
+    }
+
 }
