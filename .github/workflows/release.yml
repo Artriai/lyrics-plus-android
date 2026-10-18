@@ -88,6 +88,22 @@ jobs:
           SHA256=$(sha256sum app/build/outputs/apk/release/app-release.apk | awk '{ print $1 }')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 
+      - name: Read Release Notes
+        id: release_notes
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          NOTES_FILE="docs/releases/${RELEASE_TAG}.md"
+          if [[ -f "${NOTES_FILE}" ]]; then
+            DELIMITER="notes_$(cat /proc/sys/kernel/random/uuid)"
+            {
+              printf 'body<<%s\n' "$DELIMITER"
+              cat "$NOTES_FILE"
+              printf '\n%s\n' "$DELIMITER"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       # 步骤 4：将打包好的 APK 上传并发布到 GitHub Release，同时把 Hash 写入正文
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -99,6 +115,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           body: |
             ## 📦 Release ${{ steps.version.outputs.tag }}
+            
+            ${{ steps.release_notes.outputs.body }}
             
             ### 🔒 文件校验和 (SHA-256 Checksums)
             * **app-release.apk**: `${{ steps.calc_sha.outputs.sha256 }}`
