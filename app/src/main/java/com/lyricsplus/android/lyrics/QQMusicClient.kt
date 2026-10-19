@@ -9,20 +9,23 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONStringer
 
-class QQMusicClient {
+class QQMusicClient(private val observer: LyricsSearchObserver? = null) {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
         runCatching {
             LyricsSearch.find(
                 source = "QQ 音乐",
                 expected = SongMetadata(track.track, track.artist, track.album, track.durationSeconds.toDouble()),
                 search = ::searchSongs,
-                fetch = { fetchLyrics(it.value) }
+                fetch = { fetchLyrics(it.value, it.song) },
+                observer = observer
             )
         }
     }
 
-    private fun fetchLyrics(songMid: String): List<LyricsLine> {
-        val officialResult = runCatching { fetchOfficialLyrics(songMid) }
+    private fun fetchLyrics(songMid: String, song: SongMetadata): List<LyricsLine> {
+        val officialResult = runCatching {
+            SyncedLyricsQuality.usable(fetchOfficialLyrics(songMid), song.title, song.durationSeconds)
+        }
         officialResult.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
 
         val lyricData = fetchLegacyLyrics(songMid)
@@ -42,7 +45,7 @@ class QQMusicClient {
         )) else ""
         val synced = LrcParser.parse(rawLyric)
         val translation = LrcParser.parse(rawTrans).filter(::isUsefulAuxiliaryLine)
-        return mergeTranslation(synced, translation)
+        return SyncedLyricsQuality.usable(mergeTranslation(synced, translation), song.title, song.durationSeconds)
     }
 
     private fun fetchOfficialLyrics(songMid: String): List<LyricsLine> {
@@ -138,12 +141,19 @@ class QQMusicClient {
             val singers = song.optJSONArray("singer")
             val artist = if (singers == null) "" else (0 until singers.length())
                 .joinToString(" ") { singers.getJSONObject(it).optString("name") }
+            val credits = if (singers == null) emptyList() else
+                (0 until singers.length()).map {
+                    val singer = singers.getJSONObject(it)
+                    ArtistAliases.names(singer.optString("name"), singer.optString("title"))
+                }
             val album = song.optJSONObject("album")
             LyricsCandidate(mid, SongMetadata(
                 title = QqMusicSearchMetadata.title(song.optString("title").ifBlank { song.optString("name") }),
                 artist = artist,
                 album = album?.optString("name").orEmpty().ifBlank { album?.optString("title").orEmpty() },
-                durationSeconds = song.optDouble("interval", 0.0)
+                durationSeconds = song.optDouble("interval", 0.0),
+                artistAliases = ArtistAliases.credits(credits),
+                artistCredits = credits
             ), mid)
         }
     }
@@ -177,11 +187,18 @@ class QQMusicClient {
             val singers = song.optJSONArray("singer")
             val artist = if (singers == null) "" else (0 until singers.length())
                 .joinToString(" ") { singers.getJSONObject(it).optString("name") }
+            val credits = if (singers == null) emptyList() else
+                (0 until singers.length()).map {
+                    val singer = singers.getJSONObject(it)
+                    ArtistAliases.names(singer.optString("name"), singer.optString("title"))
+                }
             LyricsCandidate(mid, SongMetadata(
                 title = QqMusicSearchMetadata.title(song.optString("songname")),
                 artist = artist,
                 album = song.optString("albumname"),
-                durationSeconds = song.optDouble("interval", 0.0)
+                durationSeconds = song.optDouble("interval", 0.0),
+                artistAliases = ArtistAliases.credits(credits),
+                artistCredits = credits
             ), mid)
         }
     }

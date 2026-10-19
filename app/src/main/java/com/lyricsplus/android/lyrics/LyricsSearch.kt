@@ -10,6 +10,12 @@ data class LyricsSearchQuery(val title: String, val artist: String)
 
 data class LyricsCandidate<T>(val id: String, val song: SongMetadata, val value: T)
 
+/** Opt-in metadata diagnostics for live regression tests; no lyric text is exposed. */
+interface LyricsSearchObserver {
+    fun candidates(query: LyricsSearchQuery, songs: List<Pair<String, SongMetadata>>) {}
+    fun selected(id: String, song: SongMetadata, score: Int) {}
+}
+
 enum class LyricsSearchFailure { NO_MATCH, NO_SYNCED_LYRICS }
 
 class LyricsSearchException(val reason: LyricsSearchFailure, source: String) : Exception(
@@ -58,7 +64,8 @@ object LyricsSearch {
         source: String,
         expected: SongMetadata,
         search: (LyricsSearchQuery) -> List<LyricsCandidate<T>>,
-        fetch: (LyricsCandidate<T>) -> List<LyricsLine>
+        fetch: (LyricsCandidate<T>) -> List<LyricsLine>,
+        observer: LyricsSearchObserver? = null
     ): LyricsSearchResult {
         val attempted = mutableSetOf<String>()
         var foundMatch = false
@@ -66,7 +73,9 @@ object LyricsSearch {
         for (query in queries(expected)) {
             // Network/API failures propagate; keyword fallback is only for an
             // unsuccessful search, not a reason to repeat a failing connection.
-            val candidates = search(query).mapNotNull { candidate ->
+            val songs = search(query)
+            observer?.candidates(query, songs.map { it.id to it.song })
+            val candidates = songs.mapNotNull { candidate ->
                 LyricsMatching.score(expected, candidate.song)?.let { candidate to it }
             }.sortedByDescending { it.second }
             if (candidates.isNotEmpty()) foundMatch = true
@@ -76,7 +85,10 @@ object LyricsSearch {
                 attempted.add(candidate.id)
                 try {
                     val lyrics = fetch(candidate)
-                    if (lyrics.isNotEmpty()) return LyricsSearchResult(lyrics, score)
+                    if (lyrics.isNotEmpty()) {
+                        observer?.selected(candidate.id, candidate.song, score)
+                        return LyricsSearchResult(lyrics, score)
+                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {

@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
-class LrclibClient {
+class LrclibClient(private val observer: LyricsSearchObserver? = null) {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
         runCatching {
             val expected = SongMetadata(track.track, track.artist, track.album, track.durationSeconds.toDouble())
@@ -15,7 +15,8 @@ class LrclibClient {
                 source = "LRCLIB",
                 expected = expected,
                 search = ::searchSongs,
-                fetch = { parseLyrics(it.value) }
+                fetch = { parseLyrics(it.value) },
+                observer = observer
             )
         }
     }
@@ -34,6 +35,7 @@ class LrclibClient {
         val obj = JSONObject(response.body)
         val score = LyricsMatching.score(expected, obj.songMetadata()) ?: return null
         val lyrics = parseLyrics(obj).ifEmpty { return null }
+        observer?.selected(obj.optLong("id").toString(), obj.songMetadata(), score)
         return LyricsSearchResult(lyrics, score)
     }
 
@@ -61,7 +63,10 @@ class LrclibClient {
         if (obj.optBoolean("instrumental", false)) return listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
         val enhanced = if (obj.isNull("enhancedLyrics")) "" else obj.optString("enhancedLyrics")
         val synced = if (obj.isNull("syncedLyrics")) "" else obj.optString("syncedLyrics")
-        return LrcParser.parse(enhanced).ifEmpty { LrcParser.parse(synced) }
+        fun usable(raw: String) = SyncedLyricsQuality.usable(
+            LrcParser.parse(raw), obj.optString("trackName"), obj.optDouble("duration", 0.0)
+        )
+        return usable(enhanced).ifEmpty { usable(synced) }
     }
 
     private fun request(url: String): HttpResponse {

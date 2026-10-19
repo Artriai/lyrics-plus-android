@@ -81,8 +81,8 @@ object HttpClient {
 
     val okHttpClient: OkHttpClient by lazy {
         val builder = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
 
         cacheDir?.let { dir ->
             runCatching {

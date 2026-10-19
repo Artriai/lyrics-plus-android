@@ -35,7 +35,7 @@ class LyricsMatchingTest {
     @Test
     fun versionDifferencesAreNotFullTitleMatches() {
         val studio = SongMetadata("Song", "Artist")
-        assertTrue(LyricsMatching.score(studio, studio.copy(title = "Song - Live"))!! < 100)
+        assertNull(LyricsMatching.score(studio, studio.copy(title = "Song - Live")))
     }
 
     @Test
@@ -57,7 +57,7 @@ class LyricsMatchingTest {
     @Test
     fun knownMetadataDifferencesReduceConfidenceButUnknownDurationDoesNot() {
         val same = expected.copy(title = "Hotel California")
-        assertTrue(LyricsMatching.score(expected, same.copy(durationSeconds = 500.0))!! < 100)
+        assertNull(LyricsMatching.score(expected, same.copy(durationSeconds = 500.0)))
         assertTrue(LyricsMatching.score(expected, same.copy(album = "Live Album"))!! < 100)
         assertEquals(100, LyricsMatching.score(expected, same.copy(durationSeconds = 0.0)))
         assertEquals(100, LyricsMatching.score(expected, same.copy(durationSeconds = Double.NaN)))
@@ -83,4 +83,29 @@ class LyricsMatchingTest {
         assertEquals(100, LyricsMatching.selectionScore(null, listOf(LyricsLine(1000, "hello(1000,500)"))))
     }
 
+
+    @Test fun rejectsAccompanimentClipsAndIncompatibleVersionsBeforeTimingBonus() {
+        val expected = SongMetadata("说好不哭", "周杰伦", durationSeconds = 222.0)
+        for (title in listOf("说好不哭 (伴奏)", "说好不哭 (DJ Remix)", "说好不哭 (Live)")) {
+            assertNull(LyricsMatching.score(expected, expected.copy(title = title)))
+        }
+        assertNull(LyricsMatching.score(expected, expected.copy(durationSeconds = 84.0)))
+        assertEquals(100, LyricsMatching.score(expected, expected.copy(durationSeconds = 221.0)))
+        val live = expected.copy(title = "说好不哭 - Live")
+        assertEquals(100, LyricsMatching.score(live, live.copy(title = "说好不哭 (Live)")))
+        assertEquals(100, LyricsMatching.score(SongMetadata("Live Forever", "Artist"), SongMetadata("Live Forever", "Artist")))
+    }
+
+    @Test fun exactButMisleadingArtistAliasesDoNotRescueShortClips() {
+        val actual = SongMetadata("稻香", "何兵兵", durationSeconds = 121.599, artistAliases = listOf("周杰伦"))
+        assertNull(LyricsMatching.score(SongMetadata("稻香", "周杰伦", durationSeconds = 223.0), actual))
+    }
+
+    @Test fun featuredGuestNamesAreNotRecordingVersionLabels() {
+        assertEquals(100, LyricsMatching.score(
+            SongMetadata("Song (feat. DJ Guest)", "Artist"), SongMetadata("Song", "Artist")
+        ))
+        assertNull(LyricsMatching.score(SongMetadata("Song", "!!!"),
+            SongMetadata("Song", "?", artistAliases = listOf("???"))))
+    }
 }

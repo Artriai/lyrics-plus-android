@@ -134,7 +134,7 @@ internal class LyricsRace(
                         finishLegacyValidation()
                         publish()
                         outcome = best?.let { Result.success(it) }
-                            ?: Result.failure(SocketTimeoutException("歌词搜索超过 8 秒"))
+                            ?: Result.failure(SocketTimeoutException("歌词搜索超过 10 秒"))
                     }
                 }
             }
@@ -152,7 +152,7 @@ internal class LyricsRace(
     }
 
     companion object {
-        const val REQUEST_TIMEOUT_MS = 8_000L
+        const val REQUEST_TIMEOUT_MS = 10_000L
     }
 
     private suspend fun requestResult(request: suspend () -> Result<CachedLyricsResult>): Result<CachedLyricsResult> {

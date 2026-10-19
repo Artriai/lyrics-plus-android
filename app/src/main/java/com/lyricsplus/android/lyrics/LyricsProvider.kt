@@ -61,7 +61,7 @@ class LyricsProvider(
                     // A manual selection fills only its own source cache, never the automatic winner.
                     val result = withTimeoutOrNull(LyricsRace.REQUEST_TIMEOUT_MS) {
                         findSyncedLyricsForSource(track, preferredSource, session = session)
-                    } ?: Result.failure(SocketTimeoutException("歌词搜索超过 8 秒"))
+                    } ?: Result.failure(SocketTimeoutException("歌词搜索超过 10 秒"))
                     automaticRequests.requireCurrent(session)
                     return@runCatching result.getOrThrow()
                 }
@@ -71,7 +71,7 @@ class LyricsProvider(
                     onUpdate = { candidate -> withContext(callerContext) { onUpdate(candidate) } }
                 ) { publish, commit ->
                     LyricsCacheResolver().resolve(
-                        cached = cacheDb.getLyrics(trackKey),
+                        cached = SyncedLyricsQuality.cache(cacheDb.getLyrics(trackKey), track.track, track.durationSeconds.toDouble()),
                         request = { source, refresh -> findSyncedLyricsForSource(track, source, refresh, session) },
                         onUpdate = publish,
                         save = { entry -> commit { cacheDb.saveLyrics(trackKey, entry) } },
@@ -94,7 +94,10 @@ class LyricsProvider(
             val memKey = "$trackKey|$sourceName"
             
             if (!refresh) {
-                val cached = inMemoryCache[memKey] ?: cacheDb.getSourceLyrics(trackKey, sourceName)
+                val cached = SyncedLyricsQuality.cache(
+                    inMemoryCache[memKey] ?: cacheDb.getSourceLyrics(trackKey, sourceName),
+                    track.track, track.durationSeconds.toDouble()
+                )
                 if (cached != null && cached.result.score != null) {
                     automaticRequests.commitSource(session) { inMemoryCache[memKey] = cached }
                     return@runCatching cached.result
@@ -160,12 +163,14 @@ class LyricsProvider(
 
     fun isCached(track: NowPlaying): Boolean {
         val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
-        return cacheDb.hasLyrics(trackKey)
+        return SyncedLyricsQuality.cache(cacheDb.getLyrics(trackKey), track.track, track.durationSeconds.toDouble()) != null
     }
 
     fun isCachedForSource(track: NowPlaying, sourceName: String): Boolean {
         val trackKey = listOf(track.track, track.artist, track.album, track.durationSeconds).joinToString("|")
-        return inMemoryCache["$trackKey|$sourceName"]?.let {
+        return SyncedLyricsQuality.cache(
+            inMemoryCache["$trackKey|$sourceName"], track.track, track.durationSeconds.toDouble()
+        )?.let {
             it.result.score != null
         } == true
     }

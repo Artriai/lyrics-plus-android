@@ -6,25 +6,26 @@ import com.lyricsplus.android.data.LyricsSearchResult
 import org.json.JSONObject
 import java.net.URLEncoder
 
-class NeteaseClient {
+class NeteaseClient(private val observer: LyricsSearchObserver? = null) {
     suspend fun findSyncedLyrics(track: NowPlaying): Result<LyricsSearchResult> = HttpClient.lyricsRequest {
         runCatching {
             LyricsSearch.find(
                 source = "网易云音乐",
                 expected = SongMetadata(track.track, track.artist, track.album, track.durationSeconds.toDouble()),
                 search = ::searchSongs,
-                fetch = { fetchSyncedLyrics(it.value) }
+                fetch = { fetchSyncedLyrics(it.value, it.song) },
+                observer = observer
             )
         }
     }
 
-    private fun fetchSyncedLyrics(songId: Long): List<LyricsLine> {
+    private fun fetchSyncedLyrics(songId: Long, song: SongMetadata): List<LyricsLine> {
         val lyricJson = fetchLyrics(songId) ?: return emptyList()
         if (lyricJson.optBoolean("nolyric", false)) return listOf(LyricsLine(0L, "♪ 纯音乐 ♪"))
         val yrc = lyricJson.optJSONObject("yrc")?.optString("lyric").orEmpty()
         val lrc = lyricJson.optJSONObject("lrc")?.optString("lyric").orEmpty()
-        val synced = if (yrc.isNotBlank()) parseNeteaseYrc(yrc).ifEmpty { parseNeteaseLrc(lrc) }
-            else parseNeteaseLrc(lrc)
+        val synced = SyncedLyricsQuality.usable(parseNeteaseYrc(yrc), song.title, song.durationSeconds)
+            .ifEmpty { SyncedLyricsQuality.usable(parseNeteaseLrc(lrc), song.title, song.durationSeconds) }
         val translation = parseNeteaseLrc(lyricJson.optJSONObject("tlyric")?.optString("lyric").orEmpty())
         return mergeTranslation(synced, translation)
     }
@@ -40,6 +41,7 @@ class NeteaseClient {
         return (0 until songs.length()).mapNotNull { index ->
             val song = songs.getJSONObject(index)
             val id = song.optLong("id")
+            val credits = song.artistCredits()
             if (id <= 0) null else LyricsCandidate(
                 id.toString(),
                 SongMetadata(
@@ -47,7 +49,9 @@ class NeteaseClient {
                     artist = song.artistNames(),
                     album = song.optJSONObject("al")?.optString("name")
                         ?: song.optJSONObject("album")?.optString("name").orEmpty(),
-                    durationSeconds = song.optLong("dt", song.optLong("duration", 0L)) / 1000.0
+                    durationSeconds = song.optLong("dt", song.optLong("duration", 0L)) / 1000.0,
+                    artistAliases = ArtistAliases.credits(credits),
+                    artistCredits = credits
                 ),
                 id
             )
@@ -138,6 +142,18 @@ class NeteaseClient {
         val artists = optJSONArray("ar") ?: optJSONArray("artists") ?: return ""
         return (0 until artists.length())
             .joinToString(" ") { artists.getJSONObject(it).optString("name") }
+    }
+
+    private fun JSONObject.artistCredits(): List<List<String>> {
+        val artists = optJSONArray("ar") ?: optJSONArray("artists") ?: return emptyList()
+        return (0 until artists.length()).map { index ->
+            val artist = artists.getJSONObject(index)
+            val aliases = listOf("alias", "alia").flatMap { key ->
+                val values = artist.optJSONArray(key)
+                if (values == null) emptyList() else (0 until values.length()).map { values.optString(it) }
+            }
+            ArtistAliases.names(artist.optString("name"), aliases = aliases)
+        }
     }
 
     private fun comparableText(value: String): String =

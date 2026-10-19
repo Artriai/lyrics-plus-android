@@ -1,0 +1,25 @@
+{
+  "songs": [
+    {
+      "sampleId": "reg-sayuri",
+      "title": "花の塔",
+      "artist": "Sayuri",
+      "album": "",
+      "durationSeconds": 276
+    },
+    {
+      "sampleId": "reg-hotel",
+      "title": "Hotel California - 2013 Remaster",
+      "artist": "Eagles",
+      "album": "Hotel California",
+      "durationSeconds": 391
+    },
+    {
+      "sampleId": "reg-sparkle",
+      "title": "スパークル - movie ver.",
+      "artist": "RADWIMPS",
+      "album": "Your Name.",
+      "durationSeconds": 535
+    }
+  ]
+}
