@@ -43,8 +43,8 @@ android {
         applicationId = "com.lyricsplus.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.5.0"
+        versionCode = 9
+        versionName = "1.5.1"
         
         resConfigs("en", "zh", "zh-rCN", "zh-rTW", "zh-rHK")
     }
