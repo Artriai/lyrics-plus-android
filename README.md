@@ -53,7 +53,7 @@
 ## 🛠️ 编译与安装
 
 1. **直接安装**：
-   * 在本仓库的 **Releases** 页面中，直接下载打包好的最新版本正式包 [app-release.apk](app/build/outputs/apk/release/app-release.apk) 在您的 Android 手机上安装。
+   * 打开本仓库的 [最新 Release 页面](https://github.com/Artriai/lyrics-plus-android/releases/latest)，在 **Assets** 中下载 `app-release.apk`，然后在您的 Android 手机上安装。
 2. **自行编译**：
    * 用 **Android Studio** 打开项目
    * 直接运行 `app` 配置，或者在终端运行以下命令：
